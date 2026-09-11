@@ -53,6 +53,7 @@ fork surface.
 | `crates/language_models/src/language_models.rs` | provider registration body |
 | `crates/language_models/Cargo.toml` | one dependency |
 | `crates/settings_content/src/settings_content.rs` | one section |
+| `crates/settings/src/vscode_import.rs` | one field |
 | `crates/settings_content/src/language.rs` | one enum variant, two arms |
 | `crates/language/src/language_settings.rs` | one arm |
 | `crates/edit_prediction/src/edit_prediction.rs` | two arms |
@@ -60,7 +61,7 @@ fork surface.
 | `crates/edit_prediction_ui/Cargo.toml` | one dependency |
 | `crates/zed/src/zed/edit_prediction_registry.rs` | one enum variant, three arms |
 | `crates/zed/src/main.rs` | no_proxy, engine init, quit, palette, first open |
-| `crates/zed/Cargo.toml` | two dependencies |
+| `crates/zed/Cargo.toml` | two dependencies; `agent_servers` and `command_palette_hooks` made plain dependencies |
 | `crates/agent/src/agent.rs` | one string |
 | `crates/release_channel/src/lib.rs` | four strings |
 | `assets/settings/default.json` | three keys |
@@ -69,6 +70,12 @@ fork surface.
 
 Nothing in `editor`, `project`, `workspace`, `terminal`, `git`, `vim`, or
 `gpui`.
+
+After every merge, compare `acp_thread::AgentConnection` with the
+delegating `impl` in `crates/knightcode_agent/src/connection.rs`. A method
+upstream adds with a default body compiles without a delegation, and then
+the default silently disables that feature for KnightCode; add the
+delegation for every new method.
 
 ## Building
 
