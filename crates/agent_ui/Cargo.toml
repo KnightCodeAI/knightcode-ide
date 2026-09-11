@@ -66,6 +66,7 @@ idna.workspace = true
 indoc.workspace = true
 itertools.workspace = true
 jsonschema.workspace = true
+knightcode_agent.workspace = true
 language.workspace = true
 language_model.workspace = true
 language_models.workspace = true

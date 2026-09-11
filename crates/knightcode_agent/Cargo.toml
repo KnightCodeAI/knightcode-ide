@@ -1,0 +1,42 @@
+[package]
+name = "knightcode_agent"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/knightcode_agent.rs"
+
+[dependencies]
+acp_thread.workspace = true
+agent.workspace = true
+agent-client-protocol.workspace = true
+agent_servers.workspace = true
+anyhow.workspace = true
+collections.workspace = true
+fs.workspace = true
+futures.workspace = true
+gpui.workspace = true
+knightcode_engine.workspace = true
+log.workspace = true
+project.workspace = true
+settings.workspace = true
+task.workspace = true
+ui.workspace = true
+util.workspace = true
+
+[dev-dependencies]
+agent_servers = { workspace = true, features = ["test-support"] }
+fs = { workspace = true, features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
+http_client = { workspace = true, features = ["test-support"] }
+knightcode_engine = { workspace = true, features = ["test-support"] }
+project = { workspace = true, features = ["test-support"] }
+settings = { workspace = true, features = ["test-support"] }
+# project/test-support turns on remote/test-support, whose Mock identity
+# only `workspace` compiled with its own test-support knows about.
+workspace = { workspace = true, features = ["test-support"] }

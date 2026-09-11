@@ -482,11 +482,11 @@ impl Agent {
 
     pub fn server(
         &self,
-        fs: Arc<dyn fs::Fs>,
-        thread_store: Entity<agent::ThreadStore>,
+        _fs: Arc<dyn fs::Fs>,
+        _thread_store: Entity<agent::ThreadStore>,
     ) -> Rc<dyn agent_servers::AgentServer> {
         match self {
-            Self::NativeAgent => Rc::new(agent::NativeAgentServer::new(fs, thread_store)),
+            Self::NativeAgent => Rc::new(knightcode_agent::KnightCodeAgentServer::new()),
             Self::Custom { id: name } => {
                 Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
             }
