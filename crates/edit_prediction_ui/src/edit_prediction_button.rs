@@ -261,6 +261,61 @@ impl Render for EditPredictionButton {
                         .with_handle(self.popover_menu_handle.clone()),
                 )
             }
+            EditPredictionProvider::KnightCode => {
+                let enabled = self.editor_enabled.unwrap_or(true);
+                let has_model =
+                    knightcode_models::edit_prediction::edit_prediction_model(cx).is_some();
+                let this = cx.weak_entity();
+
+                let tooltip_meta = if has_model {
+                    "Powered by KnightCode"
+                } else {
+                    "Sign in to KnightCode to enable edit predictions"
+                };
+
+                // The language toggles only: no provider switching and no
+                // "configure providers" item, so no other provider is
+                // reachable from here.
+                div().child(
+                    PopoverMenu::new("knightcode")
+                        .menu(move |window, cx| {
+                            this.update(cx, |this, cx| {
+                                ContextMenu::build(window, cx, |menu, window, cx| {
+                                    this.build_language_settings_menu(menu, window, cx)
+                                })
+                            })
+                            .ok()
+                        })
+                        .anchor(Anchor::BottomRight)
+                        .trigger_with_tooltip(
+                            IconButton::new("knightcode-icon", IconName::Sparkle)
+                                .shape(IconButtonShape::Square)
+                                .tab_index(0isize)
+                                .aria_label("Edit Prediction")
+                                .when(!has_model, |this| {
+                                    this.indicator(Indicator::dot().color(Color::Error))
+                                        .indicator_border_color(Some(
+                                            cx.theme().colors().status_bar_background,
+                                        ))
+                                })
+                                .when(has_model && !enabled, |this| {
+                                    this.indicator(Indicator::dot().color(Color::Ignored))
+                                        .indicator_border_color(Some(
+                                            cx.theme().colors().status_bar_background,
+                                        ))
+                                }),
+                            move |_window, cx| {
+                                Tooltip::with_meta(
+                                    "Edit Prediction",
+                                    Some(&ToggleMenu),
+                                    tooltip_meta,
+                                    cx,
+                                )
+                            },
+                        )
+                        .with_handle(self.popover_menu_handle.clone()),
+                )
+            }
             EditPredictionProvider::OpenAiCompatibleApi => {
                 let enabled = self.editor_enabled.unwrap_or(true);
                 let this = cx.weak_entity();

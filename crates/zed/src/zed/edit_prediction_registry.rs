@@ -151,6 +151,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
         EditPredictionProvider::Mercury => Some(EditPredictionProviderConfig::Zed(
             EditPredictionModel::Mercury,
         )),
+        EditPredictionProvider::KnightCode => Some(EditPredictionProviderConfig::KnightCode),
     }
 }
 
@@ -158,6 +159,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
 enum EditPredictionProviderConfig {
     Copilot,
     Codestral,
+    KnightCode,
     Zed(EditPredictionModel),
 }
 
@@ -166,6 +168,7 @@ impl EditPredictionProviderConfig {
         match self {
             EditPredictionProviderConfig::Copilot => "Copilot",
             EditPredictionProviderConfig::Codestral => "Codestral",
+            EditPredictionProviderConfig::KnightCode => "KnightCode",
             EditPredictionProviderConfig::Zed(model) => match model {
                 EditPredictionModel::Zeta => "Zeta",
                 EditPredictionModel::Fim { .. } => "FIM",
@@ -249,6 +252,12 @@ fn assign_edit_prediction_provider(
         Some(EditPredictionProviderConfig::Codestral) => {
             let http_client = client.http_client();
             let provider = cx.new(|_| CodestralEditPredictionDelegate::new(http_client));
+            editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
+        }
+        Some(EditPredictionProviderConfig::KnightCode) => {
+            let provider = cx.new(|cx| {
+                knightcode_models::edit_prediction::KnightCodeEditPredictionDelegate::new(cx)
+            });
             editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
         }
         Some(EditPredictionProviderConfig::Zed(model)) => {

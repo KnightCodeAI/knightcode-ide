@@ -4,6 +4,7 @@
 //! read from the engine and never a credential; signing in is a login the
 //! engine runs, driven from the view in `sign_in.rs`.
 
+pub mod edit_prediction;
 mod model;
 mod request;
 mod sign_in;
