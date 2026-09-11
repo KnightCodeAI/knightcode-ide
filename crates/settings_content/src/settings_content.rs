@@ -209,6 +209,9 @@ pub struct SettingsContent {
     /// Configuration of audio in Zed.
     pub audio: Option<AudioSettingsContent>,
 
+    /// KnightCode's engine and the surfaces it serves.
+    pub knightcode: Option<KnightCodeSettingsContent>,
+
     /// Whether or not to automatically check for updates.
     ///
     /// Default: true
@@ -403,7 +406,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, language_models, outline_panel, project_panel,
+        journal, knightcode, log, line_indicator_format, language_models, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
         instrumentation,
@@ -564,6 +567,25 @@ pub struct AudioSettingsContent {
     /// Select specific input audio device.
     #[serde(rename = "experimental.input_audio_device")]
     pub input_audio_device: Option<AudioInputDeviceName>,
+}
+
+/// KnightCode's engine and the surfaces it serves.
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct KnightCodeSettingsContent {
+    /// Absolute path of the `knightcode-engine` binary.
+    ///
+    /// Default: `KNIGHTCODE_ENGINE_PATH`, then `knightcode-engine` next to the IDE executable.
+    pub engine_path: Option<String>,
+    /// Attach to an engine already running at this URL instead of starting one.
+    /// `KNIGHTCODE_ENGINE_TOKEN` must then be set in the IDE's environment.
+    ///
+    /// Default: none
+    pub engine_url: Option<String>,
+    /// The model edit prediction sends to, as a `<providerId>/<modelId>` reference from the engine's catalog.
+    ///
+    /// Default: the default model
+    pub edit_prediction_model: Option<String>,
 }
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq)]

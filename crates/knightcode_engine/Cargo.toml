@@ -1,0 +1,36 @@
+[package]
+name = "knightcode_engine"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/knightcode_engine.rs"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+collections.workspace = true
+futures.workspace = true
+gpui.workspace = true
+http_client.workspace = true
+log.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings.workspace = true
+smol.workspace = true
+thiserror.workspace = true
+util.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+http_client = { workspace = true, features = ["test-support"] }
+settings = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
