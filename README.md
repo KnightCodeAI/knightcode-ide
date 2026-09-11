@@ -1,48 +1,106 @@
-# Zed
+# KnightCode IDE
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+A desktop IDE built on a fork of Zed, with KnightCode as its only agent,
+its only inference path, and its only login. The IDE is Rust. The AI stack
+stays in the KnightCode TypeScript packages and ships alongside it as a
+headless engine binary.
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+The engine is a peer of the KnightCode CLI, not a mode of it. It owns
+every provider request and every credential, the agent loop, tools, skills,
+extensions, compaction, and session persistence. The IDE owns every pixel
+and keystroke, buffers, which model is selected, the sign-in presentation,
+and the engine process's lifetime. The IDE holds no API key, runs no OAuth
+exchange, and stores no credential.
 
----
+Three seams connect them. The agent panel speaks ACP over stdio. Buffer
+inline assist, terminal inline assist, commit messages and thread titles
+speak HTTP chat completions on loopback. Tab / next-edit prediction speaks
+HTTP fill-in-the-middle. One login serves all three.
 
-### Installation
+## Base
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+This `main` starts at Zed commit
+`a57ba9b17c433ea1ebfdec8f649f4fa5a402d03b` (2026-09-10 17:54:38 UTC),
+tagged here as `knightcode-base`.
 
-Other platforms are not yet available:
+Nearest upstream tags at that date: `v1.19.2` (stable) and
+`v1.20.0-pre`. There was no `v1.21` tag. Rebasing onto `v1.21.0` when it
+is cut is a merge of a tag that already contains this base.
 
-- Web ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
+Remote `upstream` is https://github.com/zed-industries/zed.
 
-### Developing Zed
+## Merging upstream
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+```text
+git fetch upstream
+git merge upstream/v1.21.0
+```
 
-### Contributing
+Conflicts are expected only in the files below. Everything else should
+apply cleanly; if it does not, the extra conflict is a defect in the
+fork surface.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+| File | Change |
+| --- | --- |
+| `crates/knightcode_agent/` | new crate, agent panel |
+| `crates/knightcode_models/` | new crate, completions and edit prediction |
+| `crates/knightcode_engine/` | new crate, process lifecycle and HTTP client |
+| `crates/agent_ui/src/agent_ui.rs` | one match arm; command-palette filter |
+| `crates/agent_ui/src/agent_panel.rs` | unspent |
+| `crates/agent_ui/src/conversation_view.rs` | unspent |
+| `crates/agent_ui/src/mention_set.rs` | unspent |
+| `crates/agent_ui/Cargo.toml` | one dependency |
+| `crates/language_models/src/language_models.rs` | provider registration body |
+| `crates/language_models/Cargo.toml` | one dependency |
+| `crates/settings_content/src/settings_content.rs` | one section |
+| `crates/settings_content/src/language.rs` | one enum variant, two arms |
+| `crates/language/src/language_settings.rs` | one arm |
+| `crates/edit_prediction/src/edit_prediction.rs` | two arms |
+| `crates/edit_prediction_ui/src/edit_prediction_button.rs` | one arm |
+| `crates/edit_prediction_ui/Cargo.toml` | one dependency |
+| `crates/zed/src/zed/edit_prediction_registry.rs` | one enum variant, three arms |
+| `crates/zed/src/main.rs` | no_proxy, engine init, quit, palette, first open |
+| `crates/zed/Cargo.toml` | two dependencies |
+| `crates/agent/src/agent.rs` | one string |
+| `crates/release_channel/src/lib.rs` | four strings |
+| `assets/settings/default.json` | three keys |
+| `Cargo.toml` | three members, three workspace dependencies |
+| `Cargo.lock` | lockfile |
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+Nothing in `editor`, `project`, `workspace`, `terminal`, `git`, `vim`, or
+`gpui`.
 
-### Licensing
+## Building
 
-Zed source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0 components where marked.
+```text
+cargo build -p zed
+```
 
-License information for third party dependencies must be correctly provided for CI to pass.
+The first build on Windows is long and the target directory is large.
+Windows prerequisites are documented in
+[`docs/src/development/windows.md`](docs/src/development/windows.md).
+The toolchain is the one pinned in `rust-toolchain.toml`.
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+## Pointing a development build at an engine
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+The IDE looks for `knightcode-engine` in this order: the
+`knightcode.engine_path` setting (an absolute path), the
+`KNIGHTCODE_ENGINE_PATH` environment variable, then
+`knightcode-engine.exe` (Windows) or `knightcode-engine` next to the IDE
+executable.
 
-## Sponsorship
+Example in the user settings file:
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+```json
+{
+  "knightcode": {
+    "engine_path": "C:/Users/you/knightcode/packages/cli-win32-x64/bin/knightcode-engine.exe"
+  }
+}
+```
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+## Licence
+
+The IDE is `GPL-3.0-or-later`, as any Zed fork must be; see
+[`LICENSE-GPL`](LICENSE-GPL). The engine is a separate MIT program and is
+not linked into this tree.
