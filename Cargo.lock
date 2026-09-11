@@ -9476,6 +9476,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "knightcode_models"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edit_prediction",
+ "edit_prediction_types",
+ "futures 0.3.32",
+ "gpui",
+ "http_client",
+ "icons",
+ "knightcode_engine",
+ "language",
+ "language_model",
+ "log",
+ "open_ai",
+ "serde_json",
+ "settings",
+ "text",
+ "ui",
+ "ui_input",
+ "zeta_prompt",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9723,6 +9747,7 @@ dependencies = [
  "gpui",
  "gpui_tokio",
  "http_client",
+ "knightcode_models",
  "language",
  "language_model",
  "language_models_cloud",

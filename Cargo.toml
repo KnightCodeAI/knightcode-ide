@@ -116,6 +116,7 @@ members = [
     "crates/keymap_editor",
     "crates/knightcode_agent",
     "crates/knightcode_engine",
+    "crates/knightcode_models",
     "crates/language",
     "crates/language_core",
     "crates/language_detection",
@@ -386,6 +387,7 @@ json_schema_store = { path = "crates/json_schema_store" }
 keymap_editor = { path = "crates/keymap_editor" }
 knightcode_agent = { path = "crates/knightcode_agent" }
 knightcode_engine = { path = "crates/knightcode_engine" }
+knightcode_models = { path = "crates/knightcode_models" }
 language = { path = "crates/language" }
 language_core = { path = "crates/language_core" }
 language_detection = { path = "crates/language_detection" }
