@@ -98,6 +98,7 @@ pub enum EditPredictionProvider {
     Ollama,
     OpenAiCompatibleApi,
     Mercury,
+    #[serde(rename = "knightcode")]
     KnightCode,
 }
 

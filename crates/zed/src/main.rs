@@ -21,6 +21,7 @@ use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
 use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
 use collab_ui::channel_view::ChannelView;
 use collections::HashMap;
+use command_palette_hooks::CommandPaletteFilter;
 use crashes::InitCrashHandler;
 use db::kvp::{GlobalKeyValueStore, KeyValueStore};
 use editor::Editor;
@@ -36,7 +37,7 @@ use gpui_platform;
 
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
-use onboarding::{FIRST_OPEN, show_onboarding_view};
+use onboarding::FIRST_OPEN;
 use project_panel::ProjectPanel;
 use prompt_store::PromptBuilder;
 use remote::RemoteConnectionOptions;
@@ -52,6 +53,7 @@ use session::{AppSession, Session};
 use settings::{BaseKeymap, Settings, SettingsStore, watch_config_file};
 use smol::future::poll_once;
 use std::{
+    any::TypeId,
     cell::RefCell,
     env,
     io::{self, IsTerminal},
@@ -437,17 +439,24 @@ fn main() {
     );
 
     let (shell_env_loaded_tx, shell_env_loaded_rx) = oneshot::channel();
-    if !stdout_is_a_pty() {
+    // The engine inherits PATH from the login shell's environment too, so
+    // its first start waits for the same signal.
+    let (engine_env_loaded_tx, engine_env_loaded_rx) = oneshot::channel();
+    let engine_env_loaded_rx = if !stdout_is_a_pty() {
         app.background_executor()
             .spawn(async {
                 #[cfg(unix)]
                 util::load_login_shell_environment().await.log_err();
                 shell_env_loaded_tx.send(()).ok();
+                engine_env_loaded_tx.send(()).ok();
             })
             .detach();
+        Some(engine_env_loaded_rx)
     } else {
-        drop(shell_env_loaded_tx)
-    }
+        drop(shell_env_loaded_tx);
+        drop(engine_env_loaded_tx);
+        None
+    };
 
     app.on_open_urls({
         let open_listener = open_listener.clone();
@@ -502,6 +511,9 @@ fn main() {
             std::env::consts::ARCH
         );
         let proxy_url = ProxySettings::get_global(cx).proxy_url();
+        // The client reads NO_PROXY once, now; loopback must be in it before
+        // that, or a corporate proxy sits between the IDE and its own engine.
+        knightcode_engine::environment::ensure_loopback_no_proxy();
         let http = {
             let _guard = Tokio::handle(cx).enter();
 
@@ -692,6 +704,11 @@ fn main() {
             app_state.user_store.clone(),
             cx,
         );
+        knightcode_engine::init(
+            agent_servers::load_proxy_env(cx).into_iter().collect(),
+            engine_env_loaded_rx,
+            cx,
+        );
         language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
         acp_tools::init(cx);
         zed::telemetry_log::init(cx);
@@ -715,6 +732,14 @@ fn main() {
             false,
             cx,
         );
+        // No zed.dev account and no Zed provider is reachable from any surface.
+        CommandPaletteFilter::update_global(cx, |filter, _| {
+            filter.hide_action_types(&[
+                TypeId::of::<client::SignIn>(),
+                TypeId::of::<client::SignOut>(),
+                TypeId::of::<zed_actions::OpenZedPredictOnboarding>(),
+            ]);
+        });
         zed::watch_user_agents_md(app_state.fs.clone(), cx);
 
         repl::init(app_state.fs.clone(), cx);
@@ -1551,7 +1576,25 @@ pub(crate) async fn restore_or_create_workspace(
             .await?;
         }
     } else if matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
-        cx.update(|cx| show_onboarding_view(app_state, cx)).await?;
+        // A plain workspace, not Zed's onboarding, whose AI page offers Zed
+        // Agent and Copilot. The key is still written so this branch is not
+        // taken again; KnightCode's own first run replaces this later.
+        cx.update(|cx| {
+            workspace::open_new(
+                Default::default(),
+                app_state,
+                cx,
+                |workspace, window, cx| {
+                    Editor::new_file(workspace, &Default::default(), window, cx);
+                    let kvp = KeyValueStore::global(cx);
+                    db::write_and_log(cx, move || async move {
+                        kvp.write_kvp(FIRST_OPEN.to_string(), "false".to_string())
+                            .await
+                    });
+                },
+            )
+        })
+        .await?;
     } else {
         cx.update(|cx| {
             workspace::open_new(

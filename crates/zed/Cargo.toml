@@ -40,7 +40,6 @@ visual-tests = [
     "dep:image",
     "dep:tempfile",
     "dep:action_log",
-    "dep:agent_servers",
     "workspace/test-support",
     "project/test-support",
     "editor/test-support",
@@ -74,7 +73,7 @@ action_log = { workspace = true, optional = true }
 activity_indicator.workspace = true
 agent-client-protocol.workspace = true
 agent.workspace = true
-agent_servers = { workspace = true, optional = true }
+agent_servers.workspace = true
 agent_settings.workspace = true
 agent_skills.workspace = true
 agent_ui = { workspace = true, features = ["audio"] }
@@ -97,6 +96,7 @@ codestral.workspace = true
 collab_ui.workspace = true
 collections.workspace = true
 command_palette.workspace = true
+command_palette_hooks.workspace = true
 component_preview.workspace = true
 copilot.workspace = true
 copilot_chat.workspace = true
@@ -152,6 +152,7 @@ install_cli.workspace = true
 journal.workspace = true
 json_schema_store.workspace = true
 keymap_editor.workspace = true
+knightcode_engine.workspace = true
 knightcode_models.workspace = true
 language.workspace = true
 language_extension.workspace = true
