@@ -162,7 +162,7 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
             {
                 Ok(text) => clean_completion(&text),
                 Err(error) => {
-                    log::warn!("knightcode: edit prediction failed: {error}");
+                    log::warn!("knightcode: edit prediction from {model} failed: {error}");
                     this.update(cx, |this, cx| {
                         this.pending_request = None;
                         cx.notify();
@@ -170,6 +170,12 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
                     return Err(anyhow!(error));
                 }
             };
+            // Nothing else records a prediction that worked, which makes a
+            // silent log ambiguous: served, or never asked for?
+            log::debug!(
+                "knightcode: edit prediction from {model}: {} characters",
+                text.len()
+            );
             if text.is_empty() {
                 this.update(cx, |this, cx| {
                     this.pending_request = None;

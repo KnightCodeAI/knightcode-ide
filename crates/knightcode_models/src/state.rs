@@ -75,8 +75,24 @@ impl State {
         self.engine.clone()
     }
 
+    /// The first model from a provider the user is signed in to, else the
+    /// first model at all.
+    ///
+    /// This is what Tab uses, and what the registry falls back to for inline
+    /// assist and commit messages when the user has named no model, so it
+    /// must not be an accident of ordering. The catalog arrives in the
+    /// engine's order — alphabetical by provider — and it includes providers
+    /// resolved from an ambient key the user never signed in to, which is how
+    /// the default came to be a provider they had never chosen.
     pub fn default_model(&self) -> Option<&EngineModel> {
-        self.models.first()
+        self.models
+            .iter()
+            .find(|model| {
+                self.accounts
+                    .iter()
+                    .any(|account| account.provider_id == model.provider_id)
+            })
+            .or_else(|| self.models.first())
     }
 
     /// Non-interactive. `CredentialsNotFound` when the engine has nothing

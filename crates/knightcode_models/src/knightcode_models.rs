@@ -145,6 +145,10 @@ mod tests {
     const ONE_ACCOUNT: &str = r#"{"accounts":[{"providerId":"anthropic","providerName":"Anthropic","type":"oauth","isSubscription":true}],"loginOptions":[]}"#;
     const NO_MODELS: &str = r#"{"models":[]}"#;
     const TWO_MODELS: &str = r#"{"models":[{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text","image"],"cost":{}},{"ref":"agentrouter/claude-opus-5","id":"claude-opus-5","providerId":"agentrouter","providerName":"AgentRouter","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text"],"cost":{}}]}"#;
+    /// The catalog as the engine really orders it: alphabetical by provider,
+    /// so a provider resolved from an ambient key sorts ahead of the one the
+    /// user signed in to.
+    const UNCHOSEN_PROVIDER_FIRST: &str = r#"{"models":[{"ref":"agentrouter/claude-opus-4-8","id":"claude-opus-4-8","providerId":"agentrouter","providerName":"AgentRouter","name":"Claude Opus 4.8","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text"],"cost":{}},{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text","image"],"cost":{}}]}"#;
 
     /// A fake engine whose accounts and models can be swapped mid-test.
     fn engine(
@@ -236,6 +240,39 @@ mod tests {
             assert!(models[0].supports_images() && !models[1].supports_images());
             assert!(!models[0].supports_tools());
             assert_eq!(provider.default_model(cx).unwrap().id(), models[0].id());
+        });
+    }
+
+    #[gpui::test]
+    async fn the_default_model_comes_from_an_account_the_user_signed_in_to(
+        cx: &mut TestAppContext,
+    ) {
+        let (_engine, _) = engine(cx, ONE_ACCOUNT, UNCHOSEN_PROVIDER_FIRST);
+        let provider = cx.update(KnightCodeLanguageModelProvider::new);
+        cx.update(|cx| provider.authenticate(cx)).await.unwrap();
+        cx.read(|cx| {
+            assert_eq!(
+                provider.default_model(cx).unwrap().id().0.as_ref(),
+                "anthropic/claude-opus-5",
+                "the default must not be whichever provider sorts first"
+            );
+            // Every model stays offered; only the default is opinionated.
+            assert_eq!(provider.provided_models(cx).len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    async fn without_an_account_the_default_is_the_first_model(cx: &mut TestAppContext) {
+        // Ambient credentials put models in the catalog with no account row
+        // to match; a default is still better than none.
+        let (_engine, _) = engine(cx, NO_ACCOUNTS, UNCHOSEN_PROVIDER_FIRST);
+        let provider = cx.update(KnightCodeLanguageModelProvider::new);
+        cx.update(|cx| provider.authenticate(cx)).await.unwrap();
+        cx.read(|cx| {
+            assert_eq!(
+                provider.default_model(cx).unwrap().id().0.as_ref(),
+                "agentrouter/claude-opus-4-8"
+            );
         });
     }
 
