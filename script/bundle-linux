@@ -9,6 +9,9 @@ help_info() {
 Usage: ${0##*/} [options]
 Build a release .tar.gz for Linux.
 
+KNIGHTCODE_ENGINE_DIR must name the directory 'bun run build:engine' writes
+for this target (packages/cli-linux-<arch>/bin in the KnightCode repository).
+
 Options:
   -h, --help     Display this help and exit.
   --flatpak      Set ZED_BUNDLE_TYPE=flatpak so that this can be included in system info
@@ -43,6 +46,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "${KNIGHTCODE_ENGINE_DIR:-}" || ! -f "${KNIGHTCODE_ENGINE_DIR}/knightcode-engine" ]]; then
+    echo "KNIGHTCODE_ENGINE_DIR must name a directory containing knightcode-engine and its runtime assets (bun run scripts/build.ts --engine --target=linux-<arch>)." >&2
+    exit 1
+fi
+
 export ZED_BUNDLE=true
 
 channel=$(<crates/zed/RELEASE_CHANNEL)
@@ -57,19 +65,9 @@ commit=$(git rev-parse HEAD | cut -c 1-7)
 version_info=$(rustc --version --verbose)
 host_line=$(echo "$version_info" | grep host)
 target_triple=${host_line#*: }
-musl_triple=${target_triple%-gnu}-musl
-remote_server_triple=${REMOTE_SERVER_TARGET:-"${musl_triple}"}
-rustup_installed=false
-if command -v rustup >/dev/null 2>&1; then
-    rustup_installed=true
-fi
 
 # Generate the licenses first, so they can be baked into the binaries
 script/generate-licenses
-
-if "$rustup_installed"; then
-    rustup target add "$remote_server_triple"
-fi
 
 export CC=${CC:-$(which clang)}
 
@@ -84,63 +82,18 @@ else
     export RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
 fi
 cargo --config .cargo/bundle-config.toml build --release --target "${target_triple}" --package zed --package cli
-# Build remote_server in separate invocation to prevent feature unification from other crates
-# from influencing dynamic libraries required by it.
-if [[ "$remote_server_triple" == "$musl_triple" ]]; then
-    export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
-    musl_cc_var="CC_$(echo "$remote_server_triple" | tr '-' '_')"
-    export "$musl_cc_var"=musl-gcc
-fi
-cargo --config .cargo/bundle-config.toml build --release --target "${remote_server_triple}" --package remote_server
 
-# Upload debug info to sentry.io
-if ! command -v sentry-cli >/dev/null 2>&1; then
-    echo "sentry-cli not found. skipping sentry upload."
-    echo "install with: 'curl -sL https://sentry.io/get-cli | bash'"
-else
-    if [[ -n "${SENTRY_AUTH_TOKEN:-}" ]]; then
-        echo "Uploading zed debug symbols to sentry..."
-        # note: this uploads the unstripped binary which is needed because it contains
-        # .eh_frame data for stack unwinding. see https://github.com/getsentry/symbolic/issues/783
-        for attempt in 1 2 3; do
-            echo "Attempting sentry upload (attempt $attempt/3)..."
-            if sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev \
-                "${target_dir}/${target_triple}"/release/zed \
-                "${target_dir}/${remote_server_triple}"/release/remote_server; then
-                echo "Sentry upload successful on attempt $attempt"
-                break
-            else
-                echo "Sentry upload failed on attempt $attempt"
-                if [ $attempt -eq 3 ]; then
-                    echo "All sentry upload attempts failed"
-                fi
-            fi
-        done
-    else
-        echo "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
-    fi
-fi
+# Not built, on purpose: remote_server, a separate archive for SSH remoting
+# with no release feed to serve it from. No Sentry upload either: it targets
+# Zed's Sentry organisation.
 
-# Split debug symbols into local .dbg files, then strip debug info and local
-# symbols from the shipped binaries. Sentry receives the full unstripped
-# binaries above; the .dbg files keep symbols recoverable when that upload
-# is skipped.
+# Split debug symbols into a local .dbg file, then strip debug info and local
+# symbols from the shipped binaries.
 # We use llvm-objcopy because GNU objcopy on older distros (e.g. Ubuntu 20.04)
 # doesn't understand CREL sections produced by newer LLVM.
 llvm-objcopy --only-keep-debug "${target_dir}/${target_triple}/release/zed" "${target_dir}/${target_triple}/release/zed.dbg"
-llvm-objcopy --only-keep-debug "${target_dir}/${remote_server_triple}/release/remote_server" "${target_dir}/${remote_server_triple}/release/remote_server.dbg"
 llvm-objcopy --strip-debug --discard-all "${target_dir}/${target_triple}/release/zed"
 llvm-objcopy --strip-debug --discard-all "${target_dir}/${target_triple}/release/cli"
-llvm-objcopy --strip-debug --discard-all "${target_dir}/${remote_server_triple}/release/remote_server"
-
-# Ensure that remote_server does not depend on libssl nor libcrypto, as we got rid of these deps.
-if ldd "${target_dir}/${remote_server_triple}/release/remote_server" | grep -q 'libcrypto\|libssl'; then
-    if [[ "$remote_server_triple" == *-musl ]]; then
-        echo "Error: remote_server still depends on libssl or libcrypto" && exit 1
-    else
-        echo "Info: Using non-musl remote-server build."
-    fi
-fi
 
 suffix=""
 if [ "$channel" != "stable" ]; then
@@ -150,12 +103,19 @@ fi
 # Move everything that should end up in the final package
 # into a temp directory.
 temp_dir=$(mktemp -d)
-zed_dir="${temp_dir}/zed$suffix.app"
+zed_dir="${temp_dir}/knightcode$suffix.app"
 
 # Binary
 mkdir -p "${zed_dir}/bin" "${zed_dir}/libexec"
 cp "${target_dir}/${target_triple}/release/zed" "${zed_dir}/libexec/zed-editor"
-cp "${target_dir}/${target_triple}/release/cli" "${zed_dir}/bin/zed"
+# The PATH launcher is knightcode-ide: the KnightCode CLI already owns knightcode.
+cp "${target_dir}/${target_triple}/release/cli" "${zed_dir}/bin/knightcode-ide"
+
+# The engine and the runtime assets it reads from beside itself. The IDE finds
+# it in engine/ next to its own executable; the CLI binary is not shipped.
+mkdir -p "${zed_dir}/libexec/engine"
+cp -R "${KNIGHTCODE_ENGINE_DIR}/." "${zed_dir}/libexec/engine/"
+rm -f "${zed_dir}/libexec/engine/knightcode"
 
 # Libs
 # Bundle libstdc++ so older supported systems can run binaries built with our
@@ -177,27 +137,29 @@ cp $(find_libs) "${zed_dir}/lib"
 
 # Icons
 mkdir -p "${zed_dir}/share/icons/hicolor/512x512/apps"
-cp "crates/zed/resources/app-icon$suffix.png" "${zed_dir}/share/icons/hicolor/512x512/apps/zed.png"
+cp "crates/zed/resources/app-icon$suffix.png" "${zed_dir}/share/icons/hicolor/512x512/apps/knightcode.png"
 mkdir -p "${zed_dir}/share/icons/hicolor/1024x1024/apps"
-cp "crates/zed/resources/app-icon$suffix@2x.png" "${zed_dir}/share/icons/hicolor/1024x1024/apps/zed.png"
+cp "crates/zed/resources/app-icon$suffix@2x.png" "${zed_dir}/share/icons/hicolor/1024x1024/apps/knightcode.png"
 
 # .desktop
+# APP_ID matches release_channel::app_id(), which the IDE's windows carry, or
+# the desktop does not pair a window with this entry and its icon.
 export DO_STARTUP_NOTIFY="true"
-export APP_CLI="zed"
-export APP_ICON="zed"
+export APP_CLI="knightcode-ide"
+export APP_ICON="knightcode"
 export APP_ARGS="%U"
 if [[ "$channel" == "preview" ]]; then
-  export APP_NAME="Zed Preview"
-  APP_ID="dev.zed.Zed-Preview"
+  export APP_NAME="KnightCode Preview"
+  APP_ID="dev.knightcode.KnightCode-Preview"
 elif [[ "$channel" == "nightly" ]]; then
-  export APP_NAME="Zed Nightly"
-  APP_ID="dev.zed.Zed-Nightly"
+  export APP_NAME="KnightCode Nightly"
+  APP_ID="dev.knightcode.KnightCode-Nightly"
 elif [[ "$channel" == "dev" ]]; then
-  export APP_NAME="Zed Devel"
-  APP_ID="dev.zed.Zed-Dev"
+  export APP_NAME="KnightCode Dev"
+  APP_ID="dev.knightcode.KnightCode-Dev"
 else
-  export APP_NAME="Zed"
-  APP_ID="dev.zed.Zed"
+  export APP_NAME="KnightCode"
+  APP_ID="dev.knightcode.KnightCode"
 fi
 
 mkdir -p "${zed_dir}/share/applications"
@@ -209,11 +171,9 @@ cp "assets/licenses.md" "${zed_dir}/licenses.md"
 
 # Create archive out of everything that's in the temp directory
 arch=$(uname -m)
-archive="zed-linux-${arch}.tar.gz"
+archive="knightcode-linux-${arch}.tar.gz"
 
 rm -rf "${archive}"
-remove_match="zed(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
+remove_match="knightcode(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
 ls "${target_dir}/release" | grep -E ${remove_match} | xargs -d "\n" -I {} rm -f "${target_dir}/release/{}" || true
-tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "zed$suffix.app"
-
-gzip -f --stdout --best "${target_dir}/${remote_server_triple}/release/remote_server" > "${target_dir}/zed-remote-server-linux-${arch}.gz"
+tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "knightcode$suffix.app"
