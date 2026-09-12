@@ -13,7 +13,6 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 $buildSuccess = $false
-$canCodeSign = $false
 
 $OSArchitecture = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
     "X64" { "x86_64" }
@@ -41,18 +40,24 @@ function Get-VSArch {
 }
 
 Push-Location
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\Launch-VsDevShell.ps1" -Arch (Get-VSArch -Arch $Architecture) -HostArch (Get-VSArch -Arch $OSArchitecture)
+# Whichever Visual Studio install carries the MSVC toolchain: Build Tools and
+# newer versions do not live where Community 2022 does.
+$vsInstallPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+& "$vsInstallPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch (Get-VSArch -Arch $Architecture) -HostArch (Get-VSArch -Arch $OSArchitecture)
 Pop-Location
 
 $target = "$Architecture-pc-windows-msvc"
 
 if ($Help) {
-    Write-Output "Usage: test.ps1 [-Install] [-Help]"
+    Write-Output "Usage: bundle-windows.ps1 [-Install] [-Help]"
     Write-Output "Build the installer for Windows.\n"
     Write-Output "Options:"
     Write-Output "  -Architecture, -a Which architecture to build (x86_64 or aarch64)"
     Write-Output "  -Install, -i      Run the installer after building."
     Write-Output "  -Help, -h         Show this help message."
+    Write-Output ""
+    Write-Output "KNIGHTCODE_ENGINE_DIR must name the directory 'bun run build:engine' writes"
+    Write-Output "(packages/cli-win32-x64/bin in the KnightCode repository)."
     exit 0
 }
 
@@ -75,24 +80,6 @@ function CheckEnvironmentVariables {
             exit 1
         }
     }
-
-    # On PRs from forks the signing secrets are not populated,
-    # so skip code signing instead of failing, like bundle-mac does.
-    $signingVars = @(
-        'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
-        'ACCOUNT_NAME', 'CERT_PROFILE_NAME', 'ENDPOINT',
-        'FILE_DIGEST', 'TIMESTAMP_DIGEST', 'TIMESTAMP_SERVER'
-    )
-
-    $missingVars = @($signingVars | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
-    if ($missingVars.Count -eq 0) {
-        $script:canCodeSign = $true
-    } else {
-        Write-Host "====== WARNING ======"
-        Write-Host "One or more of the following variables are missing: $($missingVars -join ', ')"
-        Write-Host "This bundle will not be code signed"
-        Write-Host "====== WARNING ======"
-    }
 }
 
 function PrepareForBundle {
@@ -101,12 +88,27 @@ function PrepareForBundle {
     }
     New-Item -Path "$innoDir" -ItemType Directory -Force
     Copy-Item -Path "$env:ZED_WORKSPACE\crates\zed\resources\windows\*" -Destination "$innoDir" -Recurse -Force
-    New-Item -Path "$innoDir\make_appx" -ItemType Directory -Force
-    New-Item -Path "$innoDir\appx" -ItemType Directory -Force
+    # The licence page shows the licence the IDE ships under.
+    Copy-Item -Path "$env:ZED_WORKSPACE\LICENSE-GPL" -Destination "$innoDir\license.txt" -Force
     New-Item -Path "$innoDir\bin" -ItemType Directory -Force
-    New-Item -Path "$innoDir\tools" -ItemType Directory -Force
 
     rustup target add $target
+}
+
+function StageEngine {
+    $source = $env:KNIGHTCODE_ENGINE_DIR
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        throw "KNIGHTCODE_ENGINE_DIR is not set. It must be an absolute path to the directory 'bun run build:engine' writes: knightcode-engine.exe and the runtime assets beside it (packages/cli-win32-x64/bin in the KnightCode repository)."
+    }
+    if (-not (Test-Path (Join-Path $source "knightcode-engine.exe"))) {
+        throw "knightcode-engine.exe was not found in $source. Build it with 'bun run build:engine'."
+    }
+    $dest = New-Item -Path "$innoDir\engine" -ItemType Directory -Force
+    # Everything the engine reads from beside itself: package.json (its
+    # version), themes, assets, export-html, docs, native prebuilds and the
+    # photon wasm. The CLI binary is the one thing there the IDE does not ship.
+    Get-ChildItem -Path $source | Where-Object { $_.Name -ne "knightcode.exe" } | Copy-Item -Destination $dest -Recurse -Force
+    Write-Output "Staged the engine from $source"
 }
 
 function GenerateLicenses {
@@ -114,112 +116,20 @@ function GenerateLicenses {
 }
 
 function BuildZedAndItsFriends {
-    Write-Output "Building Zed and its friends, for channel: $channel"
-    # Build zed.exe, cli.exe and auto_update_helper.exe
-    cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --package auto_update_helper --target $target
-    Copy-Item -Path ".\$CargoOutDir\zed.exe" -Destination "$innoDir\Zed.exe" -Force
+    Write-Output "Building KnightCode and its friends, for channel: $channel"
+    # Build zed.exe and cli.exe
+    cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target $target
+    Copy-Item -Path ".\$CargoOutDir\zed.exe" -Destination "$innoDir\KnightCode.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\cli.exe" -Destination "$innoDir\cli.exe" -Force
-    Copy-Item -Path ".\$CargoOutDir\auto_update_helper.exe" -Destination "$innoDir\auto_update_helper.exe" -Force
-    # Build explorer_command_injector.dll
-    switch ($channel) {
-        "stable" {
-            cargo --config .cargo/bundle-config.toml build --release --features stable --no-default-features --package explorer_command_injector --target $target
-        }
-        "preview" {
-            cargo --config .cargo/bundle-config.toml build --release --features preview --no-default-features --package explorer_command_injector --target $target
-        }
-        default {
-            cargo --config .cargo/bundle-config.toml build --release --package explorer_command_injector --target $target
-        }
-    }
-    Copy-Item -Path ".\$CargoOutDir\explorer_command_injector.dll" -Destination "$innoDir\zed_explorer_command_injector.dll" -Force
-}
-
-function BuildRemoteServer {
-    Write-Output "Building remote_server for $target"
-    cargo --config .cargo/bundle-config.toml build --release --package remote_server --target $target
-
-    # Create zipped remote server binary
-    $remoteServerSrc = (Resolve-Path ".\$CargoOutDir\remote_server.exe").Path
-
-    if ($canCodeSign) {
-        Write-Output "Code signing remote_server.exe"
-        & "$innoDir\sign.ps1" $remoteServerSrc
-    }
-
-    $remoteServerDst = "$env:ZED_WORKSPACE\target\zed-remote-server-windows-$Architecture.zip"
-    Write-Output "Compressing remote_server to $remoteServerDst"
-    Compress-Archive -Path $remoteServerSrc -DestinationPath $remoteServerDst -Force
-
-    Write-Output "Remote server compressed successfully"
 }
 
 function ZipZedAndItsFriendsDebug {
     $items = @(
         ".\$CargoOutDir\zed.pdb",
-        ".\$CargoOutDir\cli.pdb",
-        ".\$CargoOutDir\auto_update_helper.pdb",
-        ".\$CargoOutDir\explorer_command_injector.pdb",
-        ".\$CargoOutDir\remote_server.pdb"
+        ".\$CargoOutDir\cli.pdb"
     )
 
     Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
-}
-
-
-function UploadToSentry {
-    if (-not (Get-Command "sentry-cli" -ErrorAction SilentlyContinue)) {
-        Write-Output "sentry-cli not found. skipping sentry upload."
-        Write-Output "install with: 'winget install -e --id=Sentry.sentry-cli'"
-        return
-    }
-    if ([string]::IsNullOrWhiteSpace($env:SENTRY_AUTH_TOKEN)) {
-        Write-Output "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
-        return
-    }
-    Write-Output "Uploading zed debug symbols to sentry..."
-    for ($i = 1; $i -le 3; $i++) {
-        try {
-            sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev $CargoOutDir
-            break
-        }
-        catch {
-            Write-Output "Sentry upload attempt $i failed: $_"
-            if ($i -eq 3) {
-                Write-Output "All sentry upload attempts failed"
-                throw
-            }
-            Start-Sleep -Seconds 2
-        }
-    }
-}
-
-function MakeAppx {
-    switch ($channel) {
-        "stable" {
-            $manifestFile = "$env:ZED_WORKSPACE\crates\explorer_command_injector\AppxManifest.xml"
-        }
-        "preview" {
-            $manifestFile = "$env:ZED_WORKSPACE\crates\explorer_command_injector\AppxManifest-Preview.xml"
-        }
-        default {
-            $manifestFile = "$env:ZED_WORKSPACE\crates\explorer_command_injector\AppxManifest-Nightly.xml"
-        }
-    }
-    Copy-Item -Path "$manifestFile" -Destination "$innoDir\make_appx\AppxManifest.xml"
-    # Add makeAppx.exe to Path
-    $sdk = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
-    $env:Path += ';' + $sdk
-    makeAppx.exe pack /d "$innoDir\make_appx" /p "$innoDir\zed_explorer_command_injector.appx" /nv
-}
-
-function SignZedAndItsFriends {
-    if (-not $canCodeSign) {
-        return
-    }
-
-    $files = "$innoDir\Zed.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
-    & "$innoDir\sign.ps1" $files
 }
 
 function DownloadAMDGpuServices {
@@ -240,11 +150,10 @@ function DownloadConpty {
 }
 
 function CollectFiles {
-    Move-Item -Path "$innoDir\zed_explorer_command_injector.appx" -Destination "$innoDir\appx\zed_explorer_command_injector.appx" -Force
-    Move-Item -Path "$innoDir\zed_explorer_command_injector.dll" -Destination "$innoDir\appx\zed_explorer_command_injector.dll" -Force
-    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\zed.exe" -Force
-    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\zed" -Force
-    Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
+    # The PATH launcher is knightcode-ide: the KnightCode CLI already owns
+    # knightcode on PATH.
+    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\knightcode-ide.exe" -Force
+    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\knightcode-ide" -Force
     if($Architecture -eq "aarch64") {
         New-Item -Type Directory -Path "$innoDir\arm64" -Force
         Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
@@ -264,60 +173,60 @@ function BuildInstaller {
     $issFilePath = "$innoDir\zed.iss"
     switch ($channel) {
         "stable" {
-            $appId = "{{2DB0DA96-CA55-49BB-AF4F-64AF36A86712}"
+            $appId = "{{11325453-1811-4EA4-AFF1-699B534B844C}"
             $appIconName = "app-icon"
-            $appName = "Zed"
-            $appDisplayName = "Zed"
-            $appSetupName = "Zed-$Architecture"
-            # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "Zed-Stable-Instance-Mutex"
-            $appExeName = "Zed"
-            $regValueName = "Zed"
-            $appUserId = "ZedIndustries.Zed"
-            $appShellNameShort = "Z&ed"
-            $appAppxFullName = "ZedIndustries.Zed_1.0.0.0_neutral__japxn1gcva8rg"
+            $appName = "KnightCode"
+            $appDisplayName = "KnightCode"
+            $appSetupName = "KnightCode-$Architecture"
+            # Matches release_channel::app_identifier(), which names the mutex
+            # in crates\zed\src\zed\windows_only_instance.rs
+            $appMutex = "KnightCode-Stable-Instance-Mutex"
+            $appExeName = "KnightCode"
+            $regValueName = "KnightCode"
+            $appUserId = "KnightCodeAI.KnightCode"
+            $appShellNameShort = "K&nightCode"
         }
         "preview" {
-            $appId = "{{F70E4811-D0E2-4D88-AC99-D63752799F95}"
+            $appId = "{{92DC5C4B-6E17-4FBA-8B04-9A4A08F50B02}"
             $appIconName = "app-icon-preview"
-            $appName = "Zed Preview"
-            $appDisplayName = "Zed Preview"
-            $appSetupName = "Zed-$Architecture"
-            # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "Zed-Preview-Instance-Mutex"
-            $appExeName = "Zed"
-            $regValueName = "ZedPreview"
-            $appUserId = "ZedIndustries.Zed.Preview"
-            $appShellNameShort = "Z&ed Preview"
-            $appAppxFullName = "ZedIndustries.Zed.Preview_1.0.0.0_neutral__japxn1gcva8rg"
+            $appName = "KnightCode Preview"
+            $appDisplayName = "KnightCode Preview"
+            $appSetupName = "KnightCode-$Architecture"
+            # Matches release_channel::app_identifier(), which names the mutex
+            # in crates\zed\src\zed\windows_only_instance.rs
+            $appMutex = "KnightCode-Preview-Instance-Mutex"
+            $appExeName = "KnightCode"
+            $regValueName = "KnightCodePreview"
+            $appUserId = "KnightCodeAI.KnightCode.Preview"
+            $appShellNameShort = "K&nightCode Preview"
         }
         "nightly" {
-            $appId = "{{1BDB21D3-14E7-433C-843C-9C97382B2FE0}"
+            $appId = "{{C62AB0ED-FF36-4EA2-882C-ADFF2270711C}"
             $appIconName = "app-icon-nightly"
-            $appName = "Zed Nightly"
-            $appDisplayName = "Zed Nightly"
-            $appSetupName = "Zed-$Architecture"
-            # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "Zed-Nightly-Instance-Mutex"
-            $appExeName = "Zed"
-            $regValueName = "ZedNightly"
-            $appUserId = "ZedIndustries.Zed.Nightly"
-            $appShellNameShort = "Z&ed Editor Nightly"
-            $appAppxFullName = "ZedIndustries.Zed.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
+            $appName = "KnightCode Nightly"
+            $appDisplayName = "KnightCode Nightly"
+            $appSetupName = "KnightCode-$Architecture"
+            # Matches release_channel::app_identifier(), which names the mutex
+            # in crates\zed\src\zed\windows_only_instance.rs
+            $appMutex = "KnightCode-Nightly-Instance-Mutex"
+            $appExeName = "KnightCode"
+            $regValueName = "KnightCodeNightly"
+            $appUserId = "KnightCodeAI.KnightCode.Nightly"
+            $appShellNameShort = "K&nightCode Nightly"
         }
         "dev" {
-            $appId = "{{8357632E-24A4-4F32-BA97-E575B4D1FE5D}"
+            $appId = "{{8DB6F53D-FFCC-4AE0-AD87-25FD1BCD143D}"
             $appIconName = "app-icon-dev"
-            $appName = "Zed Dev"
-            $appDisplayName = "Zed Dev"
-            $appSetupName = "Zed-$Architecture"
-            # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
-            $appMutex = "Zed-Dev-Instance-Mutex"
-            $appExeName = "Zed"
-            $regValueName = "ZedDev"
-            $appUserId = "ZedIndustries.Zed.Dev"
-            $appShellNameShort = "Z&ed Dev"
-            $appAppxFullName = "ZedIndustries.Zed.Dev_1.0.0.0_neutral__japxn1gcva8rg"
+            $appName = "KnightCode Dev"
+            $appDisplayName = "KnightCode Dev"
+            $appSetupName = "KnightCode-$Architecture"
+            # Matches release_channel::app_identifier(), which names the mutex
+            # in crates\zed\src\zed\windows_only_instance.rs
+            $appMutex = "KnightCode-Dev-Instance-Mutex"
+            $appExeName = "KnightCode"
+            $regValueName = "KnightCodeDev"
+            $appUserId = "KnightCodeAI.KnightCode.Dev"
+            $appShellNameShort = "K&nightCode Dev"
         }
         default {
             Write-Error "can't bundle installer for $channel."
@@ -325,10 +234,15 @@ function BuildInstaller {
         }
     }
 
-    # Windows runner 2022 default has iscc in PATH, https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md
-    # Currently, we are using Windows 2022 runner.
-    # Windows runner 2025 doesn't have iscc in PATH for now, https://github.com/actions/runner-images/issues/11228
-    $innoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    # CI images install Inno Setup per machine; winget, run unelevated,
+    # installs it per user.
+    $innoSetupPath = @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $innoSetupPath) {
+        throw "ISCC.exe was not found. Install Inno Setup 6: winget install --exact --id JRSoftware.InnoSetup"
+    }
 
     $definitions = @{
         "AppId"          = $appId
@@ -345,7 +259,6 @@ function BuildInstaller {
         "AppUserId"      = $appUserId
         "Version"        = "$env:RELEASE_VERSION"
         "SourceDir"      = "$env:ZED_WORKSPACE"
-        "AppxFullName"   = $appAppxFullName
     }
 
     $defs = @()
@@ -354,24 +267,18 @@ function BuildInstaller {
     }
 
     $innoArgs = @($issFilePath) + $defs
-    if($canCodeSign) {
-        # Checked by zed.iss to decide whether to sign the installer.
-        $env:ZED_SIGN_BUNDLE = "1"
-        $signTool = "powershell.exe -ExecutionPolicy Bypass -File $innoDir\sign.ps1 `$f"
-        $innoArgs += "/sDefaultsign=`"$signTool`""
-    }
 
     # Execute Inno Setup
-    Write-Host "🚀 Running Inno Setup: $innoSetupPath $innoArgs"
+    Write-Host "Running Inno Setup: $innoSetupPath $innoArgs"
     $process = Start-Process -FilePath $innoSetupPath -ArgumentList $innoArgs -NoNewWindow -Wait -PassThru
 
     if ($process.ExitCode -eq 0) {
-        Write-Host "✅ Inno Setup successfully compiled the installer"
+        Write-Host "Inno Setup compiled the installer"
         Write-Output "SETUP_PATH=target/$appSetupName.exe" >> $env:GITHUB_ENV
         $script:buildSuccess = $true
     }
     else {
-        Write-Host "❌ Inno Setup failed: $($process.ExitCode)"
+        Write-Host "Inno Setup failed: $($process.ExitCode)"
         $script:buildSuccess = $false
     }
 }
@@ -381,28 +288,33 @@ $innoDir = "$env:ZED_WORKSPACE\inno\$Architecture"
 $debugArchive = "$CargoOutDir\zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
 $debugStoreKey = "$env:ZED_RELEASE_CHANNEL/zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
 
+# Not built, on purpose:
+# - remote_server: a separate archive for SSH remoting, with no release feed
+#   to serve it from.
+# - auto_update_helper: updates are off (release_channel::poll_for_updates),
+#   and it renames files it finds by the name Zed.exe.
+# - explorer_command_injector and its appx: the package claims Zed Industries'
+#   identity, and installing it needs a trusted signature. The classic
+#   context-menu entries in zed.iss cover Windows 11 under "Show more options".
+# - code signing: there is no certificate. sign.ps1 stays in the tree, so
+#   signing is one function again the day there is one.
+# - the Sentry symbol upload: it targets Zed's Sentry organisation.
 CheckEnvironmentVariables
 PrepareForBundle
+StageEngine
 GenerateLicenses
 BuildZedAndItsFriends
-BuildRemoteServer
-MakeAppx
-SignZedAndItsFriends
 ZipZedAndItsFriendsDebug
 DownloadAMDGpuServices
 DownloadConpty
 CollectFiles
 BuildInstaller
 
-if($env:CI) {
-    UploadToSentry
-}
-
 if ($buildSuccess) {
     Write-Output "Build successful"
     if ($Install) {
-        Write-Output "Installing Zed..."
-        Start-Process -FilePath "$env:ZED_WORKSPACE/target/ZedEditorUserSetup-x64-$env:RELEASE_VERSION.exe"
+        Write-Output "Installing KnightCode..."
+        Start-Process -FilePath "$env:ZED_WORKSPACE/target/KnightCode-$Architecture.exe"
     }
     exit 0
 }
