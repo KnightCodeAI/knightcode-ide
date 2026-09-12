@@ -1,6 +1,6 @@
 //! One login, driven from the IDE: start it on the engine, poll its state,
-//! report each event once (a URL to open, a device code to show), park on a
-//! prompt the UI must answer, and end complete or failed. The engine holds
+//! report each event once (a URL to open, a device code to show) and each
+//! prompt once, and end complete or failed. The engine holds
 //! the OAuth exchange and writes the credential; this side only relays.
 
 use crate::client::{ClientError, EngineClient, LoginEvent, LoginKind, LoginState, PendingPrompt};
@@ -17,7 +17,8 @@ pub enum LoginError {
 #[derive(Debug)]
 pub enum LoginOutcome {
     Complete,
-    /// The engine needs a value from the user; `submit`, then `advance` again.
+    /// The engine needs a value this surface cannot ask for; the login is
+    /// still pending, so `cancel` it or hand it to one that can prompt.
     Prompt(PendingPrompt),
 }
 
@@ -25,6 +26,9 @@ pub struct Login {
     client: EngineClient,
     pub id: String,
     reported: usize,
+    /// The prompt already handed to `on_prompt`, so a poll that still sees it
+    /// does not offer it twice.
+    reported_prompt: Option<String>,
     pub poll_interval: Duration,
 }
 
@@ -39,31 +43,49 @@ impl Login {
             client,
             id,
             reported: 0,
+            reported_prompt: None,
             poll_interval: Duration::from_millis(500),
         })
     }
 
+    /// Poll until the login settles. `on_event` sees each engine event once;
+    /// `on_prompt` sees each prompt once and answers whether to keep polling.
+    ///
+    /// A prompt is not the end of a login: an OAuth flow offers the paste
+    /// fallback *while* its loopback callback is still in flight, so the
+    /// engine can settle on its own with the box on screen. A caller that can
+    /// show the box says `true` here and lets whichever side wins finish the
+    /// login; one that cannot says `false` and gets the prompt back.
     pub async fn advance(
         &mut self,
         mut on_event: impl FnMut(&LoginEvent),
+        mut on_prompt: impl FnMut(&PendingPrompt) -> bool,
     ) -> Result<LoginOutcome, LoginError> {
         loop {
             let state = self.client.login_state(&self.id).await?;
-            let (events, outcome) = match state {
+            let (events, pending_prompt, complete) = match state {
                 LoginState::Pending {
                     events,
                     pending_prompt,
                     ..
-                } => (events, pending_prompt.map(LoginOutcome::Prompt)),
-                LoginState::Complete { events, .. } => (events, Some(LoginOutcome::Complete)),
+                } => (events, pending_prompt, false),
+                LoginState::Complete { events, .. } => (events, None, true),
                 LoginState::Failed { error, .. } => return Err(LoginError::Failed(error)),
             };
             for event in events.iter().skip(self.reported) {
                 on_event(event);
             }
             self.reported = self.reported.max(events.len());
-            if let Some(outcome) = outcome {
-                return Ok(outcome);
+            if complete {
+                return Ok(LoginOutcome::Complete);
+            }
+            if let Some(prompt) = pending_prompt
+                && self.reported_prompt.as_deref() != Some(prompt.id.as_str())
+            {
+                self.reported_prompt = Some(prompt.id.clone());
+                if !on_prompt(&prompt) {
+                    return Ok(LoginOutcome::Prompt(prompt));
+                }
             }
             // A real timer: this module runs outside gpui so it can be
             // driven from the panel's connection and tested under smol.
@@ -143,7 +165,7 @@ mod tests {
             login.poll_interval = Duration::from_millis(1);
             let mut seen = Vec::new();
             let outcome = login
-                .advance(|event| seen.push(format!("{event:?}")))
+                .advance(|event| seen.push(format!("{event:?}")), |_| false)
                 .await
                 .unwrap();
             assert!(matches!(outcome, LoginOutcome::Complete));
@@ -163,15 +185,46 @@ mod tests {
             .await
             .unwrap();
             login.poll_interval = Duration::from_millis(1);
-            let LoginOutcome::Prompt(prompt) = login.advance(|_| {}).await.unwrap() else {
+            let LoginOutcome::Prompt(prompt) = login.advance(|_| {}, |_| false).await.unwrap()
+            else {
                 panic!("expected a prompt");
             };
             assert_eq!(prompt.id, "P1");
             login.submit("sk-test").await.unwrap();
             assert!(matches!(
-                login.advance(|_| {}).await.unwrap(),
+                login.advance(|_| {}, |_| false).await.unwrap(),
                 LoginOutcome::Complete
             ));
+        });
+    }
+
+    /// The paste fallback of a browser flow: the box goes up, the loopback
+    /// callback wins, and the login must still end complete rather than sit
+    /// on a prompt nobody will answer.
+    #[test]
+    fn a_prompt_the_caller_waits_through_still_completes() {
+        smol::block_on(async {
+            let mut login = Login::start(
+                client_for(&[PENDING_PROMPT, PENDING_PROMPT, COMPLETE]),
+                "anthropic",
+                LoginKind::Oauth,
+            )
+            .await
+            .unwrap();
+            login.poll_interval = Duration::from_millis(1);
+            let mut prompts = 0;
+            let outcome = login
+                .advance(
+                    |_| {},
+                    |_| {
+                        prompts += 1;
+                        true
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(matches!(outcome, LoginOutcome::Complete));
+            assert_eq!(prompts, 1, "the same prompt was offered twice");
         });
     }
 
@@ -182,7 +235,7 @@ mod tests {
                 .await
                 .unwrap();
             login.poll_interval = Duration::from_millis(1);
-            let error = login.advance(|_| {}).await.unwrap_err();
+            let error = login.advance(|_| {}, |_| false).await.unwrap_err();
             assert!(
                 matches!(&error, LoginError::Failed(reason) if reason == "login cancelled"),
                 "{error}"

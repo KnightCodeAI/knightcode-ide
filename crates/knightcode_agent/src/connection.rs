@@ -21,7 +21,7 @@ use futures::{StreamExt as _, channel::mpsc};
 use gpui::{App, AppContext as _, Entity, SharedString, Task};
 use knightcode_engine::{
     Engine, LoginKind, LoginOption,
-    client::LoginEvent,
+    client::{LoginEvent, PromptKind},
     login::{Login, LoginOutcome},
 };
 use project::{AgentId, Project};
@@ -179,9 +179,16 @@ impl AgentConnection for KnightCodeConnection {
             let (tx, mut rx) = mpsc::unbounded::<LoginEvent>();
             let polling = cx.background_spawn(async move {
                 let outcome = login
-                    .advance(|event| {
-                        tx.unbounded_send(event.clone()).ok();
-                    })
+                    .advance(
+                        |event| {
+                            tx.unbounded_send(event.clone()).ok();
+                        },
+                        // A manual-code prompt is only the paste fallback of a
+                        // browser flow; keep waiting for the callback, which is
+                        // how these logins finish here. Any other prompt wants
+                        // a value this surface has no way to ask for.
+                        |prompt| prompt.prompt.kind == PromptKind::ManualCode,
+                    )
                     .await;
                 (login, outcome)
             });
