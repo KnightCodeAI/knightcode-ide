@@ -44,10 +44,10 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
     match *RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "Zed-Editor-Dev",
-        ReleaseChannel::Nightly => "Zed-Editor-Nightly",
-        ReleaseChannel::Preview => "Zed-Editor-Preview",
-        ReleaseChannel::Stable => "Zed-Editor-Stable",
+        ReleaseChannel::Dev => "KnightCode-Dev",
+        ReleaseChannel::Nightly => "KnightCode-Nightly",
+        ReleaseChannel::Preview => "KnightCode-Preview",
+        ReleaseChannel::Stable => "KnightCode-Stable",
     }
 }
 
@@ -199,7 +199,9 @@ impl ReleaseChannel {
 
     /// Returns whether we want to poll for updates for this [`ReleaseChannel`]
     pub fn poll_for_updates(&self) -> bool {
-        !matches!(self, ReleaseChannel::Dev)
+        // The update endpoint is Zed's, and it would offer this installation
+        // Zed's builds. KnightCode has no update feed, so no channel polls.
+        false
     }
 
     /// Returns the display name for this [`ReleaseChannel`].
@@ -227,10 +229,10 @@ impl ReleaseChannel {
     /// This also has to match the bundle identifier for Zed on macOS.
     pub fn app_id(&self) -> &'static str {
         match self {
-            ReleaseChannel::Dev => "dev.zed.Zed-Dev",
-            ReleaseChannel::Nightly => "dev.zed.Zed-Nightly",
-            ReleaseChannel::Preview => "dev.zed.Zed-Preview",
-            ReleaseChannel::Stable => "dev.zed.Zed",
+            ReleaseChannel::Dev => "dev.knightcode.KnightCode-Dev",
+            ReleaseChannel::Nightly => "dev.knightcode.KnightCode-Nightly",
+            ReleaseChannel::Preview => "dev.knightcode.KnightCode-Preview",
+            ReleaseChannel::Stable => "dev.knightcode.KnightCode",
         }
     }
 

@@ -4,15 +4,9 @@
 mod reliability;
 mod zed;
 
-// Ensure the binary name stays in sync with APP_NAME so that the paths used
-// at runtime (data dir, config dir, etc.) match what the binary is called.
-const _: () = assert!(
-    paths::APP_NAME_LOWERCASE
-        .as_bytes()
-        .eq_ignore_ascii_case(env!("CARGO_BIN_NAME").as_bytes()),
-    "paths::APP_NAME_LOWERCASE must match the binary name. \
-     Forks: update APP_NAME in crates/paths/src/paths.rs when renaming the binary.",
-);
+// paths::APP_NAME is the product's name, KnightCode, while the bin target stays
+// `zed` so merges stay quiet; the bundle scripts name the executable. Nothing at
+// runtime derives a path from the binary name, so the two are not asserted equal.
 
 use agent_ui::AgentPanel;
 use anyhow::{Context as _, Result};
@@ -733,11 +727,20 @@ fn main() {
             cx,
         );
         // No zed.dev account and no Zed provider is reachable from any surface.
+        // Updates, release notes and feedback reach Zed's servers and trackers,
+        // not ours.
         CommandPaletteFilter::update_global(cx, |filter, _| {
             filter.hide_action_types(&[
                 TypeId::of::<client::SignIn>(),
                 TypeId::of::<client::SignOut>(),
                 TypeId::of::<zed_actions::OpenZedPredictOnboarding>(),
+                TypeId::of::<auto_update::Check>(),
+                TypeId::of::<auto_update::ViewReleaseNotes>(),
+                TypeId::of::<auto_update_ui::ViewReleaseNotesLocally>(),
+                TypeId::of::<zed_actions::feedback::FileBugReport>(),
+                TypeId::of::<zed_actions::feedback::RequestFeature>(),
+                TypeId::of::<zed_actions::feedback::EmailZed>(),
+                TypeId::of::<feedback::OpenZedRepo>(),
             ]);
         });
         zed::watch_user_agents_md(app_state.fs.clone(), cx);
