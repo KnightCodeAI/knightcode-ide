@@ -46,7 +46,7 @@ fork surface.
 | `crates/knightcode_models/` | new crate, completions and edit prediction |
 | `crates/knightcode_engine/` | new crate, process lifecycle and HTTP client |
 | `crates/agent_ui/src/agent_ui.rs` | one match arm; command-palette filter |
-| `crates/agent_ui/src/agent_panel.rs` | unspent |
+| `crates/agent_ui/src/agent_panel.rs` | one string, the new-thread menu entry |
 | `crates/agent_ui/src/conversation_view.rs` | one string, the composer placeholder |
 | `crates/agent_ui/src/mention_set.rs` | unspent |
 | `crates/agent_ui/Cargo.toml` | one dependency |
@@ -79,7 +79,7 @@ fork surface.
 | `script/bundle-windows.ps1` | identity, engine staging, drops, Visual Studio and Inno Setup lookup |
 | `script/bundle-mac`, `script/bundle-linux` | identity, engine staging, drops |
 | `script/install.sh`, `script/install-linux`, `script/uninstall.sh` | names and paths; no download |
-| `assets/settings/default.json` | four keys |
+| `assets/settings/default.json` | three keys |
 | `Cargo.toml` | three members, three workspace dependencies |
 | `Cargo.lock` | lockfile |
 
