@@ -278,15 +278,17 @@ mod tests {
         );
     }
 
+    /// With no `edit_prediction_model` of its own, Tab uses what the user
+    /// chose in the CLI — which the engine reports — and nothing otherwise.
     #[gpui::test]
-    async fn without_a_setting_the_model_is_the_providers_default(cx: &mut TestAppContext) {
+    async fn without_a_setting_the_model_is_the_one_the_user_chose(cx: &mut TestAppContext) {
         let http = http_client::FakeHttpClient::create(|request| async move {
             let body = match request.uri().path() {
                 "/v1/accounts" => {
                     r#"{"accounts":[{"providerId":"anthropic","providerName":"Anthropic","type":"oauth","isSubscription":true}],"loginOptions":[]}"#
                 }
                 "/v1/models" => {
-                    r#"{"models":[{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text"],"cost":{}}]}"#
+                    r#"{"models":[{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text"],"cost":{}}],"default":"anthropic/claude-opus-5"}"#
                 }
                 _ => "{}",
             };
@@ -321,7 +323,7 @@ mod tests {
         assert_eq!(
             cx.read(edit_prediction_model).as_deref(),
             Some("anthropic/claude-opus-5"),
-            "the provider's first model, by its engine reference"
+            "the model the engine reported as the user's, by its reference"
         );
     }
 

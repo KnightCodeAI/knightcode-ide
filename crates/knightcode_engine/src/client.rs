@@ -77,6 +77,19 @@ pub struct EngineModel {
     pub input: Vec<String>,
 }
 
+/// The catalog and, separately, the model the user chose.
+///
+/// The default is the engine's answer, not ours: the CLI records what the
+/// user picked and both front doors read the same value. `None` means they
+/// have picked nothing, or what they picked is not available — never a guess
+/// the IDE made on their behalf.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Catalog {
+    pub models: Vec<EngineModel>,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LoginEvent {
@@ -269,15 +282,8 @@ impl EngineClient {
         self.call(Method::GET, "/v1/accounts", None).await
     }
 
-    pub async fn models(&self) -> Result<Vec<EngineModel>, ClientError> {
-        #[derive(Deserialize)]
-        struct Models {
-            models: Vec<EngineModel>,
-        }
-        Ok(self
-            .call::<Models>(Method::GET, "/v1/models", None)
-            .await?
-            .models)
+    pub async fn models(&self) -> Result<Catalog, ClientError> {
+        self.call(Method::GET, "/v1/models", None).await
     }
 
     pub async fn start_login(
@@ -430,7 +436,7 @@ mod tests {
         let client = client(|_, path, _| {
             match path {
             "/v1/accounts" => (200, r#"{"accounts":[{"providerId":"anthropic","providerName":"Anthropic","type":"oauth","isSubscription":true}],"loginOptions":[{"providerId":"anthropic","providerName":"Anthropic","type":"oauth","label":"Anthropic (Claude Pro/Max)","isSubscription":true},{"providerId":"openai","providerName":"OpenAI","type":"api_key","label":"OpenAI API key","isSubscription":false}]}"#.into()),
-            "/v1/models" => (200, r#"{"models":[{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text","image"],"cost":{"input":1,"output":2}}]}"#.into()),
+            "/v1/models" => (200, r#"{"models":[{"ref":"anthropic/claude-opus-5","id":"claude-opus-5","providerId":"anthropic","providerName":"Anthropic","name":"Claude Opus 5","contextWindow":200000,"maxTokens":32000,"reasoning":true,"input":["text","image"],"cost":{"input":1,"output":2}}],"default":"anthropic/claude-opus-5"}"#.into()),
             _ => (404, "{}".into()),
         }
         });
@@ -439,10 +445,20 @@ mod tests {
         assert_eq!(accounts.accounts[0].kind, LoginKind::Oauth);
         assert_eq!(accounts.login_options.len(), 2);
         assert_eq!(accounts.login_options[1].kind, LoginKind::ApiKey);
-        let models = smol::block_on(client.models()).unwrap();
-        assert_eq!(models[0].reference, "anthropic/claude-opus-5");
-        assert_eq!(models[0].context_window, 200_000);
-        assert!(models[0].reasoning);
+        let catalog = smol::block_on(client.models()).unwrap();
+        assert_eq!(catalog.models[0].reference, "anthropic/claude-opus-5");
+        assert_eq!(catalog.models[0].context_window, 200_000);
+        assert!(catalog.models[0].reasoning);
+        assert_eq!(catalog.default.as_deref(), Some("anthropic/claude-opus-5"));
+    }
+
+    #[test]
+    fn a_catalog_with_no_chosen_default_parses_as_none() {
+        let client = client(|_, path, _| match path {
+            "/v1/models" => (200, r#"{"models":[],"default":null}"#.into()),
+            _ => (404, "{}".into()),
+        });
+        assert_eq!(smol::block_on(client.models()).unwrap().default, None);
     }
 
     #[test]

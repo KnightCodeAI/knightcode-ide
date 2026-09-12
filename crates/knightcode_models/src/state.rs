@@ -41,6 +41,10 @@ pub struct State {
     pub accounts: Vec<Account>,
     pub login_options: Vec<LoginOption>,
     pub models: Vec<EngineModel>,
+    /// The engine's report of the model the user chose, by `ref`. Kept as the
+    /// reference rather than an index so a catalog refresh cannot silently
+    /// repoint it at a different model.
+    default_model: Option<String>,
     pub login: Option<ActiveLogin>,
     refresh: Option<Task<()>>,
     _subscription: Subscription,
@@ -56,6 +60,7 @@ impl State {
             }
             EngineEvent::Stopped => {
                 this.models.clear();
+                this.default_model = None;
                 cx.notify();
             }
             EngineEvent::Failed(_) => {}
@@ -65,6 +70,7 @@ impl State {
             accounts: Vec::new(),
             login_options: Vec::new(),
             models: Vec::new(),
+            default_model: None,
             login: None,
             refresh: None,
             _subscription: subscription,
@@ -75,24 +81,19 @@ impl State {
         self.engine.clone()
     }
 
-    /// The first model from a provider the user is signed in to, else the
-    /// first model at all.
+    /// The model the user chose, as the engine reports it.
     ///
-    /// This is what Tab uses, and what the registry falls back to for inline
-    /// assist and commit messages when the user has named no model, so it
-    /// must not be an accident of ordering. The catalog arrives in the
-    /// engine's order — alphabetical by provider — and it includes providers
-    /// resolved from an ambient key the user never signed in to, which is how
-    /// the default came to be a provider they had never chosen.
+    /// This is what Tab sends to, and what the registry falls back to for
+    /// inline assist, terminal assist and commit messages. The IDE does not
+    /// pick it: the CLI records the choice and the engine hands it back, so
+    /// both front doors agree and neither invents a preference. `None` means
+    /// the user has chosen nothing — Tab then stays off and the status bar
+    /// says so, which is better than spending an account they never named.
     pub fn default_model(&self) -> Option<&EngineModel> {
+        let reference = self.default_model.as_deref()?;
         self.models
             .iter()
-            .find(|model| {
-                self.accounts
-                    .iter()
-                    .any(|account| account.provider_id == model.provider_id)
-            })
-            .or_else(|| self.models.first())
+            .find(|model| model.reference == reference)
     }
 
     /// Non-interactive. `CredentialsNotFound` when the engine has nothing
@@ -106,15 +107,16 @@ impl State {
                 .accounts()
                 .await
                 .map_err(|error| AuthenticateError::Other(anyhow!(error)))?;
-            let models = client
+            let catalog = client
                 .models()
                 .await
                 .map_err(|error| AuthenticateError::Other(anyhow!(error)))?;
-            let empty = models.is_empty();
+            let empty = catalog.models.is_empty();
             this.update(cx, |this, cx| {
                 this.accounts = accounts.accounts;
                 this.login_options = accounts.login_options;
-                this.models = models;
+                this.models = catalog.models;
+                this.default_model = catalog.default;
                 cx.notify();
             })
             .map_err(AuthenticateError::Other)?;
