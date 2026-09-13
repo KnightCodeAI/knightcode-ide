@@ -1,0 +1,52 @@
+# KnightCode's own checks. The upstream workflows beside this one only run in
+# zed-industries repositories and on their runners, so without this file a pull
+# request here gets no checks at all.
+name: knightcode
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: knightcode-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # No debugger runs here; full debug info only makes the target larger.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  windows:
+    # windows-2022, not windows-latest: its image lists the Spectre-mitigated
+    # CRT, the 26100 SDK and CMake that a Windows build needs; windows-latest
+    # now points at a Visual Studio 2026 image.
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      # Only main saves the cache: a cache saved from a pull request is visible to
+      # that pull request alone, and the repository's cache quota is shared.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Test the KnightCode crates and the upstream crates they change
+        run: cargo test -p knightcode_engine -p knightcode_agent -p knightcode_models -p settings -p release_channel
+
+      - name: Build the IDE
+        run: cargo build -p zed
