@@ -1,9 +1,29 @@
-# Builds the installers for a version tag, signs them, and publishes them as a
-# GitHub Release. knightcode.dev/api/ide serves the newest non-prerelease
-# release to installed IDEs as their update.
+# Builds the installers for a release, signs them, and publishes them as a
+# GitHub Release. knightcode.dev/api/ide serves the newest published
+# non-prerelease release to installed IDEs as their update.
+#
+# Run it from the Actions tab ("Run workflow"): it bumps the version and the
+# engine commit on main, tags, and builds. A pushed v* tag builds too. Either
+# way a stable release lands as a draft, and nothing reaches installed IDEs
+# until someone publishes it.
 name: knightcode-release
 
 on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version: the next patch, minor or major, or the current one"
+        type: choice
+        options: [patch, minor, major, current]
+        default: patch
+      engine:
+        description: "KnightCode branch, tag or commit whose engine the installers carry"
+        type: string
+        default: main
+      prerelease:
+        description: "Publish v<version>-rc.N, a prerelease never offered as an update"
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -11,12 +31,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: knightcode-release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # The KnightCode commit whose engine these installers carry. Move it on
-  # purpose, together with any IDE change that needs the newer engine.
-  KNIGHTCODE_REF: 4fba8ab26cad67938a912dde7df459f7eb26a4d0
   # The public half of KNIGHTCODE_UPDATE_SIGNING_KEY, the key RELEASE_SIGNING_KEY
   # in crates/auto_update/src/auto_update.rs holds. Every installed IDE refuses a
   # release signed by any other key, so publishing checks that the two agree.
@@ -25,25 +46,93 @@ env:
 jobs:
   version:
     runs-on: ubuntu-latest
+    permissions:
+      # Run workflow commits the bump to main and pushes the tag.
+      contents: write
     outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      engine: ${{ steps.version.outputs.engine }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - id: version
-        name: Match the tag to the crate version
+        name: Settle the tag, the version and the engine commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+          ENGINE: ${{ inputs.engine }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          crate="$(grep -m1 '^version = ' crates/zed/Cargo.toml | cut -d '"' -f2)"
-          tag="${GITHUB_REF_NAME#v}"
-          # v0.2.0-rc.1 is a prerelease of 0.2.0: published, never offered as an update.
-          if [ "${tag%%-*}" != "$crate" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match version $crate in crates/zed/Cargo.toml" >&2
-            exit 1
+          set -euo pipefail
+          current="$(grep -m1 '^version = ' crates/zed/Cargo.toml | cut -d '"' -f2)"
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "Run the release from main, not $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            IFS=. read -r major minor patch <<< "$current"
+            case "$BUMP" in
+              current) version="$current" ;;
+              patch) version="$major.$minor.$((patch + 1))" ;;
+              minor) version="$major.$((minor + 1)).0" ;;
+              major) version="$((major + 1)).0.0" ;;
+            esac
+
+            engine="$(gh api "repos/KnightCodeAI/knightcode/commits/$ENGINE" --jq .sha)"
+            if ! [[ "$engine" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "No KnightCode commit named $ENGINE" >&2
+              exit 1
+            fi
+
+            if [ "$PRERELEASE" = "true" ]; then
+              previous="$(git ls-remote --tags origin "refs/tags/v$version-rc.*" | wc -l)"
+              tag="v$version-rc.$((previous + 1))"
+            else
+              tag="v$version"
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+              echo "$tag already exists" >&2
+              exit 1
+            fi
+
+            sed -i "0,/^version = \".*\"$/s//version = \"$version\"/" crates/zed/Cargo.toml
+            sed -i "/^name = \"zed\"$/{n;s/^version = \".*\"$/version = \"$version\"/}" Cargo.lock
+            printf '%s\n' "$engine" > crates/zed/KNIGHTCODE_REF
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add crates/zed/Cargo.toml Cargo.lock crates/zed/KNIGHTCODE_REF
+            if ! git diff --cached --quiet; then
+              git commit -m "Release $tag" -m "Engine: KnightCodeAI/knightcode@$engine" -m "Run by @$GITHUB_ACTOR."
+            fi
+            git tag "$tag"
+            # One push, so main never carries a bump without its tag or the reverse.
+            git push --atomic origin HEAD:main "refs/tags/$tag"
+          else
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+            version="${version%%-*}"
+            if [ "$version" != "$current" ]; then
+              echo "Tag $tag does not match version $current in crates/zed/Cargo.toml" >&2
+              exit 1
+            fi
+            engine="$(tr -d '[:space:]' < crates/zed/KNIGHTCODE_REF)"
           fi
-          if [ "$tag" = "$crate" ]; then prerelease=false; else prerelease=true; fi
-          echo "version=$crate" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+          # v0.2.0-rc.1 is a prerelease of 0.2.0: published, never offered as an update.
+          if [ "$tag" = "v$version" ]; then prerelease=false; else prerelease=true; fi
+          {
+            echo "tag=$tag"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "engine=$engine"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag ($(git rev-parse --short HEAD)) with engine KnightCodeAI/knightcode@$engine" >> "$GITHUB_STEP_SUMMARY"
 
   bundle:
     needs: version
@@ -83,12 +172,15 @@ jobs:
       KNIGHTCODE_ENGINE_DIR: ${{ github.workspace }}/knightcode/packages/cli-${{ matrix.engine }}/bin
       RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # The tagged commit, which for Run workflow is the bump made above.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           repository: KnightCodeAI/knightcode
-          ref: ${{ env.KNIGHTCODE_REF }}
+          ref: ${{ needs.version.outputs.engine }}
           path: knightcode
           persist-credentials: false
 
@@ -165,11 +257,22 @@ jobs:
           done
           ls -l assets
 
-      - name: Publish the release
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          ENGINE: ${{ needs.version.outputs.engine }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          flags=(--title "KnightCode ${GITHUB_REF_NAME}" --generate-notes)
-          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" assets/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+          set -euo pipefail
+          flags=(--title "KnightCode $TAG" --notes "Engine: KnightCodeAI/knightcode@$ENGINE" --generate-notes)
+          # A stable release is a draft until someone publishes it, and the
+          # update feed skips drafts, so no installed IDE sees it before then.
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--draft); fi
+          gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+          url="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "Published prerelease $TAG: $url" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Draft release $TAG is ready. Install it, then publish it to ship the update: $url" >> "$GITHUB_STEP_SUMMARY"
+          fi
