@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use base64::Engine as _;
 use client::Client;
 use db::kvp::KeyValueStore;
 use futures_lite::StreamExt;
@@ -12,6 +13,7 @@ use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use settings::{RegisterSetting, Settings, SettingsStore};
+use sha2::{Digest as _, Sha256};
 use smol::fs::File;
 use smol::{
     fs,
@@ -109,15 +111,28 @@ actions!(
     ]
 );
 
-#[derive(Serialize, Debug)]
-pub struct AssetQuery<'a> {
-    asset: &'a str,
-    os: &'a str,
-    arch: &'a str,
-    metrics_id: Option<&'a str>,
-    system_id: Option<&'a str>,
-    is_staff: Option<bool>,
-}
+/// Where the updater asks for the newest release: a knightcode.dev route over
+/// the GitHub Releases of KnightCodeAI/knightcode-ide. `KNIGHTCODE_UPDATE_URL`
+/// points a build at another feed for testing; a release from any feed is
+/// installed only if the release signing key signed it.
+const RELEASES_URL: &str = "https://knightcode.dev/api/ide";
+
+/// The public half of the Ed25519 key that signs every release in CI. The
+/// Windows installer is unsigned and runs silently, so the feed alone must not
+/// decide what runs: a download is installed only if this key signed its
+/// SHA-256 digest.
+#[cfg(not(test))]
+const RELEASE_SIGNING_KEY: [u8; 32] = [
+    135, 226, 151, 96, 35, 196, 49, 223, 13, 20, 49, 167, 26, 132, 151, 8, 148, 122, 116, 29, 184,
+    130, 182, 194, 106, 22, 247, 64, 125, 197, 237, 45,
+];
+
+/// The tests' own key; its private half is `tests::TEST_SIGNING_SEED`.
+#[cfg(test)]
+const RELEASE_SIGNING_KEY: [u8; 32] = [
+    246, 153, 185, 213, 180, 224, 78, 111, 117, 247, 200, 170, 221, 79, 131, 101, 76, 87, 168, 9,
+    17, 67, 202, 173, 178, 213, 12, 29, 74, 176, 28, 151,
+];
 
 #[derive(Clone, Debug)]
 pub enum AutoUpdateStatus {
@@ -188,6 +203,8 @@ pub struct AutoUpdater {
 pub struct ReleaseAsset {
     pub version: String,
     pub url: String,
+    /// Base64 Ed25519 signature over the SHA-256 digest of the file at `url`.
+    pub signature: String,
 }
 
 struct MacOsUnmounter<'a> {
@@ -342,18 +359,16 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
     let url = match release_channel {
         ReleaseChannel::Stable | ReleaseChannel::Preview => {
             let auto_updater = AutoUpdater::get(cx)?;
-            let auto_updater = auto_updater.read(cx);
-            let mut current_version = auto_updater.current_version.clone();
+            let mut current_version = auto_updater.read(cx).current_version.clone();
             current_version.pre = semver::Prerelease::EMPTY;
             current_version.build = semver::BuildMetadata::EMPTY;
-            let release_channel = release_channel.dev_name();
-            let path = format!("/releases/{release_channel}/{current_version}");
-            auto_updater.client.http_client().build_url(&path)
+            format!(
+                "https://github.com/KnightCodeAI/knightcode-ide/releases/tag/v{current_version}"
+            )
         }
-        ReleaseChannel::Nightly => {
-            "https://github.com/zed-industries/zed/commits/nightly/".to_string()
+        ReleaseChannel::Nightly | ReleaseChannel::Dev => {
+            "https://github.com/KnightCodeAI/knightcode-ide/commits/main/".to_string()
         }
-        ReleaseChannel::Dev => "https://github.com/zed-industries/zed/commits/main/".to_string(),
     };
     Some(url)
 }
@@ -676,17 +691,7 @@ impl AutoUpdater {
         arch: &str,
         cx: &mut AsyncApp,
     ) -> Result<ReleaseAsset> {
-        let client = this.read_with(cx, |this, _| this.client.clone());
-
-        let (system_id, metrics_id, is_staff) = if client.telemetry().metrics_enabled() {
-            (
-                client.telemetry().system_id(),
-                client.telemetry().metrics_id(),
-                client.telemetry().is_staff(),
-            )
-        } else {
-            (None, None, None)
-        };
+        let http_client = this.read_with(cx, |this, _| this.client.http_client());
 
         let version = if let Some(mut version) = version {
             version.pre = semver::Prerelease::EMPTY;
@@ -695,20 +700,14 @@ impl AutoUpdater {
         } else {
             "latest".to_string()
         };
-        let http_client = client.http_client();
 
-        let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
-        let url = http_client.build_zed_cloud_url_with_query(
-            &path,
-            AssetQuery {
-                os,
-                arch,
-                asset,
-                metrics_id: metrics_id.as_deref(),
-                system_id: system_id.as_deref(),
-                is_staff,
-            },
-        )?;
+        // The platform is all the feed needs; no telemetry identifier goes with it.
+        let releases_url =
+            env::var("KNIGHTCODE_UPDATE_URL").unwrap_or_else(|_| RELEASES_URL.to_string());
+        let url = format!(
+            "{releases_url}/releases/{}/{version}/asset?asset={asset}&os={os}&arch={arch}",
+            release_channel.dev_name(),
+        );
 
         let mut response = http_client
             .get(url.as_str(), Default::default(), true)
@@ -750,7 +749,9 @@ impl AutoUpdater {
         });
 
         let fetched_release_data =
-            Self::get_release_asset(&this, release_channel, None, "zed", OS, ARCH, cx).await?;
+            Self::get_release_asset(&this, release_channel, None, "knightcode", OS, ARCH, cx)
+                .await?;
+        let signature = fetched_release_data.signature.clone();
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -806,6 +807,15 @@ impl AutoUpdater {
         )
         .await
         .with_context(|| format!("Failed to download update to {}", target_path.display()))?;
+
+        verify_release(&target_path, &signature)
+            .await
+            .with_context(|| {
+                format!(
+                    "Refusing to install the update at {}",
+                    target_path.display()
+                )
+            })?;
 
         this.update(cx, |this, cx| {
             this.status = AutoUpdateStatus::Installing {
@@ -1115,6 +1125,26 @@ async fn download_release(
     Ok(())
 }
 
+/// Checks a downloaded release against its signature before anything runs it.
+async fn verify_release(path: &Path, signature: &str) -> Result<()> {
+    let mut file = File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(signature.trim())
+        .context("the release signature is not base64")?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, RELEASE_SIGNING_KEY)
+        .verify(hasher.finalize().as_slice(), &signature)
+        .map_err(|_| anyhow::anyhow!("the release was not signed by the release signing key"))
+}
+
 async fn install_release_linux(
     temp_dir: &InstallerDir,
     downloaded_tar_gz: &Path,
@@ -1151,7 +1181,7 @@ async fn install_release_linux(
     } else {
         String::default()
     };
-    let app_folder_name = format!("zed{}.app", suffix);
+    let app_folder_name = format!("knightcode{}.app", suffix);
 
     let from = extracted.join(&app_folder_name);
     let mut to = home_dir.join(".local");
@@ -1193,7 +1223,8 @@ async fn install_release_macos(
         .file_name()
         .with_context(|| format!("invalid running app path {running_app_path:?}"))?;
 
-    let mount_path = temp_dir.path().join("Zed");
+    // The volume name script/bundle-mac gives the .dmg.
+    let mount_path = temp_dir.path().join("KnightCode");
     let mut mounted_app_path: OsString = mount_path.join(running_app_filename).into();
 
     mounted_app_path.push("/");
@@ -1372,6 +1403,55 @@ mod tests {
     pub(super) struct InstallOverride(pub Rc<dyn Fn(&Path, &AsyncApp) -> Result<Option<PathBuf>>>);
     impl Global for InstallOverride {}
 
+    /// The seed of the key whose public half is the tests' `RELEASE_SIGNING_KEY`.
+    const TEST_SIGNING_SEED: [u8; 32] = [
+        36, 24, 149, 101, 125, 26, 52, 246, 112, 7, 113, 111, 241, 156, 102, 134, 207, 217, 251,
+        251, 70, 37, 145, 151, 56, 5, 81, 254, 95, 23, 211, 97,
+    ];
+
+    /// `openssl pkeyutl -sign -rawin` over the SHA-256 digest of `hello`, with the
+    /// tests' key: how the release workflow signs, checked by what the IDE runs.
+    const OPENSSL_SIGNATURE_OF_HELLO: &str =
+        "1TdnGdDMv5gZvrZhBiyYzg095YvHFMpQe6KVQoYdR9cow/8xV6KeBe0ZsGaOYfBNZ1lG7fi3wukvUytUrpFsBQ==";
+
+    fn sign_for_test(contents: &[u8]) -> String {
+        let key_pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&TEST_SIGNING_SEED)
+            .expect("the test seed is a valid Ed25519 seed");
+        let signature = key_pair.sign(Sha256::digest(contents).as_slice());
+        base64::engine::general_purpose::STANDARD.encode(signature.as_ref())
+    }
+
+    #[test]
+    fn test_verify_release() {
+        let temp_dir = tempdir().unwrap();
+        let path = temp_dir.path().join("release");
+        std::fs::write(&path, b"hello").unwrap();
+
+        smol::block_on(async {
+            verify_release(&path, OPENSSL_SIGNATURE_OF_HELLO)
+                .await
+                .expect("an OpenSSL signature verifies");
+            verify_release(&path, &sign_for_test(b"hello"))
+                .await
+                .expect("a signature of these contents verifies");
+            assert!(
+                verify_release(&path, &sign_for_test(b"hellp"))
+                    .await
+                    .is_err(),
+                "a signature of other contents must not verify"
+            );
+            assert!(verify_release(&path, "not base64!").await.is_err());
+
+            std::fs::write(&path, b"hellp").unwrap();
+            assert!(
+                verify_release(&path, OPENSSL_SIGNATURE_OF_HELLO)
+                    .await
+                    .is_err(),
+                "a changed file must not verify"
+            );
+        });
+    }
+
     #[gpui::test]
     fn test_auto_update_defaults_to_true(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -1393,6 +1473,8 @@ mod tests {
         zlog::init_test();
         let release_available = Arc::new(AtomicBool::new(false));
 
+        const UPDATE_CONTENTS: &str = "<fake-zed-update>";
+        let signature = sign_for_test(UPDATE_CONTENTS.as_bytes());
         let (dmg_tx, dmg_rx) = oneshot::channel::<String>();
 
         cx.update(|cx| {
@@ -1407,15 +1489,16 @@ mod tests {
             let fake_client_http = FakeHttpClient::create(move |req| {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
+                let signature = signature.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
+                if req.uri().path() == "/api/ide/releases/stable/latest/asset" {
                     if release_available {
                         return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
+                            format!(r#"{{"version":"0.100.1","url":"https://test.example/new-download","signature":"{signature}"}}"#).into()
                         ).unwrap());
                     } else {
                         return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.0","url":"https://test.example/old-download"}"#.into()
+                            format!(r#"{{"version":"0.100.0","url":"https://test.example/old-download","signature":"{signature}"}}"#).into()
                         ).unwrap());
                     }
                 } else if req.uri().path() == "/new-download" {
@@ -1461,7 +1544,7 @@ mod tests {
             }
         );
 
-        dmg_tx.send("<fake-zed-update>".to_owned()).unwrap();
+        dmg_tx.send(UPDATE_CONTENTS.to_owned()).unwrap();
 
         let tmp_dir = Arc::new(tempdir().unwrap());
 
@@ -1496,7 +1579,7 @@ mod tests {
         assert!(arguments.is_empty());
         let path = path.unwrap();
         assert_eq!(path, tmp_dir.path().join("zed"));
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "<fake-zed-update>");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), UPDATE_CONTENTS);
     }
 
     #[gpui::test]
@@ -1525,6 +1608,7 @@ mod tests {
         let release = ReleaseAsset {
             version: "1.0.0".to_string(),
             url: "https://test.example/download".to_string(),
+            signature: String::new(),
         };
 
         let reported = Rc::new(std::cell::RefCell::new(Vec::<f32>::new()));
@@ -1585,6 +1669,7 @@ mod tests {
         let release = ReleaseAsset {
             version: "1.0.0".to_string(),
             url: "https://test.example/download".to_string(),
+            signature: String::new(),
         };
 
         let reported = Rc::new(std::cell::RefCell::new(Vec::<Option<f32>>::new()));

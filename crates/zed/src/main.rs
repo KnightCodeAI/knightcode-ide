@@ -656,7 +656,12 @@ fn main() {
         });
         AppState::set_global(app_state.clone(), cx);
 
-        auto_update::init(client.clone(), cx);
+        // Only the bundle scripts set ZED_BUNDLE. Every build of this tree reports
+        // the stable channel, so a developer's build would otherwise download a
+        // release and install it over the installed KnightCode.
+        if option_env!("ZED_BUNDLE").is_some() {
+            auto_update::init(client.clone(), cx);
+        }
         dap_adapters::init(cx);
         auto_update_ui::init(cx);
         reliability::init(client.clone(), app_state.workspace_store.clone(), cx);
@@ -727,15 +732,13 @@ fn main() {
             cx,
         );
         // No zed.dev account and no Zed provider is reachable from any surface.
-        // Updates, release notes and feedback reach Zed's servers and trackers,
-        // not ours.
+        // Feedback, and release notes rendered in a tab, reach Zed's servers and
+        // trackers, not ours.
         CommandPaletteFilter::update_global(cx, |filter, _| {
             filter.hide_action_types(&[
                 TypeId::of::<client::SignIn>(),
                 TypeId::of::<client::SignOut>(),
                 TypeId::of::<zed_actions::OpenZedPredictOnboarding>(),
-                TypeId::of::<auto_update::Check>(),
-                TypeId::of::<auto_update::ViewReleaseNotes>(),
                 TypeId::of::<auto_update_ui::ViewReleaseNotesLocally>(),
                 TypeId::of::<zed_actions::feedback::FileBugReport>(),
                 TypeId::of::<zed_actions::feedback::RequestFeature>(),

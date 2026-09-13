@@ -199,9 +199,7 @@ impl ReleaseChannel {
 
     /// Returns whether we want to poll for updates for this [`ReleaseChannel`]
     pub fn poll_for_updates(&self) -> bool {
-        // The update endpoint is Zed's, and it would offer this installation
-        // Zed's builds. KnightCode has no update feed, so no channel polls.
-        false
+        !matches!(self, ReleaseChannel::Dev)
     }
 
     /// Returns the display name for this [`ReleaseChannel`].

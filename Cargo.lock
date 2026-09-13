@@ -1373,6 +1373,7 @@ name = "auto_update"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "client",
  "clock",
  "ctor",
@@ -1385,10 +1386,12 @@ dependencies = [
  "parking_lot",
  "paths",
  "release_channel",
+ "ring",
  "semver",
  "serde",
  "serde_json",
  "settings",
+ "sha2",
  "smol",
  "tempfile",
  "util",
