@@ -171,7 +171,9 @@ means every installed IDE refuses every later update, so keep a copy outside
 GitHub.
 
 The macOS and Linux bundles are built by the release workflow and have not
-been run on a machine yet.
+been run on a machine yet. The Linux aarch64 build runs on Ubuntu 24.04,
+because the prebuilt libwebrtc for arm64 needs GCC 14's `libgcc_s`, so it
+needs a distribution from 2024 or later.
 
 ## Pointing a development build at an engine
 

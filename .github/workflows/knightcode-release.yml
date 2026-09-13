@@ -70,8 +70,11 @@ jobs:
             runner: ubuntu-22.04
             engine: linux-x64
             artifact: target/release/knightcode-linux-x86_64.tar.gz
+          # 24.04, not 22.04: the prebuilt libwebrtc for arm64 calls
+          # __arm_tpidr2_save, which only GCC 14's libgcc_s exports. The
+          # binary therefore needs a 2024-or-newer distribution on arm64.
           - os: linux
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
             engine: linux-arm64
             artifact: target/release/knightcode-linux-aarch64.tar.gz
     runs-on: ${{ matrix.runner }}
