@@ -12,6 +12,7 @@ mod context_server_configuration;
 pub(crate) mod conversation_view;
 mod diagnostics;
 pub mod draft_prompt_store;
+mod edit_prediction_model_picker;
 mod entry_view_state;
 mod external_source_prompt;
 mod favorite_models;
@@ -677,6 +678,13 @@ pub fn init(
                     rerun_rules_to_skills_migration(workspace, fs.clone(), window, cx);
                 },
             );
+        })
+        .detach();
+    }
+    {
+        let fs = fs.clone();
+        cx.observe_new(move |workspace: &mut Workspace, _window, _cx| {
+            edit_prediction_model_picker::register(fs.clone(), workspace);
         })
         .detach();
     }

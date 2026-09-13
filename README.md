@@ -45,11 +45,12 @@ fork surface.
 | `crates/knightcode_agent/` | new crate, agent panel |
 | `crates/knightcode_models/` | new crate, completions and edit prediction |
 | `crates/knightcode_engine/` | new crate, process lifecycle and HTTP client |
-| `crates/agent_ui/src/agent_ui.rs` | one match arm; command-palette filter |
+| `crates/agent_ui/src/agent_ui.rs` | one match arm; command-palette filter; Tab model picker module and registration |
+| `crates/agent_ui/src/edit_prediction_model_picker.rs` | new file, Tab model picker |
 | `crates/agent_ui/src/agent_panel.rs` | one string, the new-thread menu entry |
 | `crates/agent_ui/src/conversation_view.rs` | one string, the composer placeholder |
 | `crates/agent_ui/src/mention_set.rs` | unspent |
-| `crates/agent_ui/Cargo.toml` | one dependency |
+| `crates/agent_ui/Cargo.toml` | two dependencies |
 | `crates/language_models/src/language_models.rs` | provider registration body |
 | `crates/language_models/Cargo.toml` | one dependency |
 | `crates/settings_content/src/settings_content.rs` | one section |

@@ -497,6 +497,7 @@ dependencies = [
  "itertools 0.14.0",
  "jsonschema",
  "knightcode_agent",
+ "knightcode_models",
  "language",
  "language_model",
  "language_models",

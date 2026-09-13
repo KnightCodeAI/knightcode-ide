@@ -3,6 +3,11 @@
 //! the returned text inserted at the cursor and re-interpolated as the user
 //! types. The model is a setting, else the provider's default model; no
 //! list lives here.
+//!
+//! Unlike Codestral, typing on does not cancel the request in flight. A
+//! model behind the engine can take longer than the gap between keystrokes
+//! (grok-4.6 took seven seconds), so cancelling on every key meant no
+//! prediction ever landed.
 
 use anyhow::{Result, anyhow};
 use edit_prediction::cursor_excerpt;
@@ -10,18 +15,28 @@ use edit_prediction_types::{
     EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
     EditPredictionRequestTrigger, interpolate_edits,
 };
-use gpui::{App, Context, Entity, Task};
+use gpui::{App, Context, Entity, Task, actions};
 use icons::IconName;
 use knightcode_engine::{Engine, EngineSettings};
 use language::{Anchor, Buffer, BufferSnapshot, EditPreview};
 use language_model::LanguageModelRegistry;
 use settings::Settings as _;
-use std::{ops::Range, sync::Arc, time::Duration};
+use std::{
+    ops::Range,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use text::ToOffset;
 
 const MAX_EDITABLE_TOKENS: usize = 350;
 const MAX_CONTEXT_TOKENS: usize = 150;
 const MAX_OUTPUT_TOKENS: u32 = 256;
+/// The least time between two requests. A burst of keystrokes asks once
+/// more, not once per key: every request is billed, answered or not.
+const THROTTLE: Duration = Duration::from_millis(300);
+/// Requests alive at once: the one in flight and the newest one waiting
+/// behind it. A keystroke replaces only the waiting one.
+const MAX_PENDING: usize = 2;
 
 /// `knightcode.edit_prediction_model`, else the KnightCode provider's
 /// default model. `None` until the engine has models.
@@ -32,6 +47,40 @@ pub fn edit_prediction_model(cx: &App) -> Option<String> {
     let registry = LanguageModelRegistry::global(cx);
     let provider = registry.read(cx).provider(&crate::provider_id())?;
     Some(provider.default_model(cx)?.id().0.to_string())
+}
+
+actions!(
+    knightcode,
+    [
+        /// Opens a picker for the model Tab predictions use.
+        SelectEditPredictionModel
+    ]
+);
+
+/// Whether the user picked a model for Tab, rather than Tab using their
+/// chat model.
+pub fn edit_prediction_model_is_chosen(cx: &App) -> bool {
+    EngineSettings::get_global(cx)
+        .edit_prediction_model
+        .is_some()
+}
+
+/// The name of the model Tab uses, for the Tab menu; its reference when no
+/// catalog carries it.
+pub fn edit_prediction_model_name(cx: &App) -> Option<String> {
+    let reference = edit_prediction_model(cx)?;
+    let registry = LanguageModelRegistry::global(cx);
+    let name = registry
+        .read(cx)
+        .provider(&crate::provider_id())
+        .and_then(|provider| {
+            provider
+                .provided_models(cx)
+                .into_iter()
+                .find(|model| model.id().0 == reference.as_str())
+        })
+        .map(|model| model.name().0.to_string());
+    Some(name.unwrap_or(reference))
 }
 
 /// Models sometimes wrap a completion in a fence; the buffer wants code.
@@ -67,9 +116,16 @@ impl CurrentCompletion {
     }
 }
 
+struct PendingRequest {
+    id: usize,
+    _task: Task<Result<()>>,
+}
+
 pub struct KnightCodeEditPredictionDelegate {
     engine: Entity<Engine>,
-    pending_request: Option<Task<Result<()>>>,
+    pending: Vec<PendingRequest>,
+    next_request_id: usize,
+    last_request_at: Option<Instant>,
     current_completion: Option<CurrentCompletion>,
 }
 
@@ -77,8 +133,18 @@ impl KnightCodeEditPredictionDelegate {
     pub fn new(cx: &mut App) -> Self {
         Self {
             engine: knightcode_engine::global(cx),
-            pending_request: None,
+            pending: Vec::new(),
+            next_request_id: 0,
+            last_request_at: None,
             current_completion: None,
+        }
+    }
+
+    /// A request is done, and so is every request queued before it: its
+    /// answer is at least as fresh as theirs.
+    fn finish(&mut self, id: usize) {
+        if let Some(ix) = self.pending.iter().position(|request| request.id == id) {
+            self.pending.drain(..=ix);
         }
     }
 }
@@ -105,7 +171,7 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
     }
 
     fn is_refreshing(&self, _cx: &App) -> bool {
-        self.pending_request.is_some()
+        !self.pending.is_empty()
     }
 
     fn refresh(
@@ -129,10 +195,24 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
             return;
         }
 
-        self.pending_request = Some(cx.spawn(async move |this, cx| {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let task = cx.spawn(async move |this, cx| {
             if !debounce_duration.is_zero() {
                 cx.background_executor().timer(debounce_duration).await;
             }
+            let wait = this.update(cx, |this, cx| {
+                let now = cx.background_executor().now();
+                this.last_request_at
+                    .and_then(|at| (at + THROTTLE).checked_duration_since(now))
+            })?;
+            if let Some(wait) = wait {
+                cx.background_executor().timer(wait).await;
+            }
+            this.update(cx, |this, cx| {
+                this.last_request_at = Some(cx.background_executor().now());
+            })?;
+
             let cursor_offset = cursor_position.to_offset(&snapshot);
             let (excerpt_point_range, excerpt_offset_range, cursor_offset_in_excerpt) =
                 cursor_excerpt::compute_cursor_excerpt(&snapshot, cursor_offset);
@@ -164,7 +244,7 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
                 Err(error) => {
                     log::warn!("knightcode: edit prediction from {model} failed: {error}");
                     this.update(cx, |this, cx| {
-                        this.pending_request = None;
+                        this.finish(id);
                         cx.notify();
                     })?;
                     return Err(anyhow!(error));
@@ -178,7 +258,7 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
             );
             if text.is_empty() {
                 this.update(cx, |this, cx| {
-                    this.pending_request = None;
+                    this.finish(id);
                     cx.notify();
                 })?;
                 return Ok(());
@@ -195,20 +275,27 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
                     edits,
                     edit_preview,
                 });
-                this.pending_request = None;
+                this.finish(id);
                 cx.notify();
             })?;
             Ok(())
-        }));
+        });
+
+        if self.pending.len() >= MAX_PENDING {
+            // Dropping a task cancels it. The one given up is the newest
+            // waiting, never the one in flight.
+            self.pending.pop();
+        }
+        self.pending.push(PendingRequest { id, _task: task });
     }
 
     fn accept(&mut self, _cx: &mut Context<Self>) {
-        self.pending_request = None;
+        self.pending.clear();
         self.current_completion = None;
     }
 
     fn discard(&mut self, _reason: EditPredictionDiscardReason, _cx: &mut Context<Self>) {
-        self.pending_request = None;
+        self.pending.clear();
         self.current_completion = None;
     }
 
@@ -232,9 +319,10 @@ impl EditPredictionDelegate for KnightCodeEditPredictionDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, UpdateGlobal as _};
+    use gpui::{AppContext as _, TestAppContext, UpdateGlobal as _};
     use language_model::LanguageModelRegistry;
     use settings::SettingsStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[gpui::test]
     fn the_model_is_the_setting_then_the_providers_default(cx: &mut TestAppContext) {
@@ -275,6 +363,12 @@ mod tests {
         assert_eq!(
             cx.read(edit_prediction_model).as_deref(),
             Some("anthropic/claude-haiku-4-5")
+        );
+        assert!(cx.read(edit_prediction_model_is_chosen));
+        assert_eq!(
+            cx.read(edit_prediction_model_name).as_deref(),
+            Some("anthropic/claude-haiku-4-5"),
+            "no catalog carries it, so the Tab menu shows its reference"
         );
     }
 
@@ -324,6 +418,122 @@ mod tests {
             cx.read(edit_prediction_model).as_deref(),
             Some("anthropic/claude-opus-5"),
             "the model the engine reported as the user's, by its reference"
+        );
+        assert_eq!(
+            cx.read(edit_prediction_model_name).as_deref(),
+            Some("Claude Opus 5")
+        );
+        assert!(
+            !cx.read(edit_prediction_model_is_chosen),
+            "the chat model is what Tab falls back to, not a pick"
+        );
+    }
+
+    /// A model slower than the user's typing still lands a prediction: the
+    /// request in flight keeps running while they type, and a burst of
+    /// keystrokes asks once more rather than once per key.
+    #[gpui::test]
+    async fn typing_on_keeps_the_request_in_flight_and_asks_once_more(cx: &mut TestAppContext) {
+        const ANSWER_AFTER: Duration = Duration::from_secs(2);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let executor = cx.executor();
+        let http = http_client::FakeHttpClient::create({
+            let requests = requests.clone();
+            move |request| {
+                let requests = requests.clone();
+                let executor = executor.clone();
+                let is_completion = request.uri().path() == "/v1/completions";
+                async move {
+                    let body = if is_completion {
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        executor.timer(ANSWER_AFTER).await;
+                        r#"{"choices":[{"text":"println!(\"hi\");"}]}"#
+                    } else {
+                        "{}"
+                    };
+                    Ok(http_client::Response::builder()
+                        .status(200)
+                        .body(http_client::AsyncBody::from(body))
+                        .unwrap())
+                }
+            }
+        });
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            knightcode_engine::EngineSettings::register(cx);
+            language_model::init(cx);
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .knightcode
+                        .get_or_insert_default()
+                        .edit_prediction_model = Some("xai/grok-4.6".into());
+                });
+            });
+            let endpoint = knightcode_engine::Endpoint {
+                url: "http://127.0.0.1:1".into(),
+                token: "t".into(),
+            };
+            knightcode_engine::Engine::ready_for_tests(endpoint, http, cx);
+        });
+        let buffer = cx.new(|cx| Buffer::local("fn main() {\n    \n}\n", cx));
+        let delegate = cx.new(|cx| KnightCodeEditPredictionDelegate::new(cx));
+
+        let refresh = |offset: usize, cx: &mut TestAppContext| {
+            let position = buffer.read_with(cx, |buffer, _| buffer.anchor_after(offset));
+            delegate.update(cx, |delegate, cx| {
+                delegate.refresh(
+                    buffer.clone(),
+                    position,
+                    Duration::ZERO,
+                    EditPredictionRequestTrigger::BufferEdit,
+                    cx,
+                )
+            });
+            cx.run_until_parked();
+        };
+        let type_at = |offset: usize, text: &'static str, cx: &mut TestAppContext| {
+            buffer.update(cx, |buffer, cx| {
+                buffer.edit([(offset..offset, text)], None, cx)
+            });
+        };
+
+        let cursor = "fn main() {\n    ".len();
+        refresh(cursor, cx);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        type_at(cursor, "p", cx);
+        refresh(cursor + 1, cx);
+        type_at(cursor + 1, "r", cx);
+        refresh(cursor + 2, cx);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "keystrokes inside the throttle wait rather than ask"
+        );
+
+        cx.executor().advance_clock(THROTTLE);
+        cx.run_until_parked();
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            2,
+            "the burst asked once more, not once per key"
+        );
+
+        cx.executor().advance_clock(ANSWER_AFTER - THROTTLE);
+        cx.run_until_parked();
+        let position = buffer.read_with(cx, |buffer, _| buffer.anchor_after(cursor + 2));
+        let prediction =
+            delegate.update(cx, |delegate, cx| delegate.suggest(&buffer, position, cx));
+        let Some(EditPrediction::Local { edits, .. }) = prediction else {
+            panic!("the first request kept running, so its answer shows");
+        };
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].1.as_ref(),
+            "intln!(\"hi\");",
+            "what the user already typed is not suggested again"
         );
     }
 
