@@ -67,6 +67,10 @@ $env:ZED_RELEASE_CHANNEL = $channel
 $env:RELEASE_CHANNEL = $channel
 Pop-Location
 
+# Marks the build as installed, as bundle-mac and bundle-linux do: the updater
+# starts only in a build compiled with ZED_BUNDLE.
+$env:ZED_BUNDLE = "true"
+
 function CheckEnvironmentVariables {
     if(-not $env:CI) {
         return
