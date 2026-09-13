@@ -65,6 +65,7 @@ fork surface.
 | `crates/zed/src/zed/app_menus.rs` | application menu name and About; the Help menu |
 | `crates/zed/Cargo.toml` | two dependencies; `agent_servers` and `command_palette_hooks` made plain dependencies; version `0.1.0`; four bundle metadata blocks |
 | `crates/zed/RELEASE_CHANNEL` | `stable` |
+| `crates/zed/KNIGHTCODE_REF` | new file, the KnightCode commit a release builds the engine from |
 | `crates/agent/src/agent.rs` | one string |
 | `crates/release_channel/src/lib.rs` | display names, instance identifiers, app ids |
 | `crates/paths/src/paths.rs` | `APP_NAME` |
@@ -135,23 +136,29 @@ signing and the Sentry upload; each script says why.
 
 ## Releases and updates
 
-`.github/workflows/knightcode-release.yml` builds five installers when a
-`v<version>` tag is pushed: Windows x86_64, macOS aarch64 and x86_64, and
-Linux x86_64 and aarch64. The tag must match `version` in
-`crates/zed/Cargo.toml`; a suffixed tag such as `v0.2.0-rc.1` publishes a
-prerelease. Each installer carries the engine built from `KNIGHTCODE_REF`,
-the KnightCode commit named in the workflow. The publish job signs the
-SHA-256 digest of every file with the Ed25519 key in the
-`KNIGHTCODE_UPDATE_SIGNING_KEY` secret, attaches `<file>.sig` beside it, and
-creates the GitHub Release.
+`.github/workflows/knightcode-release.yml` builds five installers: Windows
+x86_64, macOS aarch64 and x86_64, and Linux x86_64 and aarch64. Each carries
+the engine built from the KnightCode commit in `crates/zed/KNIGHTCODE_REF`.
+The publish job signs the SHA-256 digest of every file with the Ed25519 key
+in the `KNIGHTCODE_UPDATE_SIGNING_KEY` secret and attaches `<file>.sig` beside
+it.
 
-To release, bump `version` in `crates/zed/Cargo.toml`, move
-`KNIGHTCODE_REF` if the IDE needs a newer engine, commit, and push the tag:
+To release, open that workflow in the Actions tab and choose **Run workflow**
+on `main`:
 
-```text
-git tag v0.2.0
-git push origin v0.2.0
-```
+- **bump**: `patch`, `minor` or `major` raises `version` in
+  `crates/zed/Cargo.toml`. `current` releases the version already there, for
+  example once its prereleases have been tried.
+- **engine**: the KnightCode branch, tag or commit to build the engine from.
+  It is resolved to a commit and written to `crates/zed/KNIGHTCODE_REF`.
+- **prerelease**: publishes `v<version>-rc.N` instead, which is never offered
+  as an update.
+
+The run commits the bump to `main` as `Release v<version>`, pushes the tag,
+and builds. A stable release is created as a draft: install it from the
+release page, then publish it. Installed IDEs only see published releases.
+Pushing a `v<version>` tag by hand still builds; the tag must match `version`
+in `crates/zed/Cargo.toml`.
 
 An installed IDE asks `https://knightcode.dev/api/ide` for the newest
 release every hour. That route, in the KnightCode repository under
