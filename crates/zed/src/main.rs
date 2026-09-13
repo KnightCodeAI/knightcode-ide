@@ -4,15 +4,9 @@
 mod reliability;
 mod zed;
 
-// Ensure the binary name stays in sync with APP_NAME so that the paths used
-// at runtime (data dir, config dir, etc.) match what the binary is called.
-const _: () = assert!(
-    paths::APP_NAME_LOWERCASE
-        .as_bytes()
-        .eq_ignore_ascii_case(env!("CARGO_BIN_NAME").as_bytes()),
-    "paths::APP_NAME_LOWERCASE must match the binary name. \
-     Forks: update APP_NAME in crates/paths/src/paths.rs when renaming the binary.",
-);
+// paths::APP_NAME is the product's name, KnightCode, while the bin target stays
+// `zed` so merges stay quiet; the bundle scripts name the executable. Nothing at
+// runtime derives a path from the binary name, so the two are not asserted equal.
 
 use agent_ui::AgentPanel;
 use anyhow::{Context as _, Result};
@@ -662,7 +656,12 @@ fn main() {
         });
         AppState::set_global(app_state.clone(), cx);
 
-        auto_update::init(client.clone(), cx);
+        // Only the bundle scripts set ZED_BUNDLE. Every build of this tree reports
+        // the stable channel, so a developer's build would otherwise download a
+        // release and install it over the installed KnightCode.
+        if option_env!("ZED_BUNDLE").is_some() {
+            auto_update::init(client.clone(), cx);
+        }
         dap_adapters::init(cx);
         auto_update_ui::init(cx);
         reliability::init(client.clone(), app_state.workspace_store.clone(), cx);
@@ -733,11 +732,18 @@ fn main() {
             cx,
         );
         // No zed.dev account and no Zed provider is reachable from any surface.
+        // Feedback, and release notes rendered in a tab, reach Zed's servers and
+        // trackers, not ours.
         CommandPaletteFilter::update_global(cx, |filter, _| {
             filter.hide_action_types(&[
                 TypeId::of::<client::SignIn>(),
                 TypeId::of::<client::SignOut>(),
                 TypeId::of::<zed_actions::OpenZedPredictOnboarding>(),
+                TypeId::of::<auto_update_ui::ViewReleaseNotesLocally>(),
+                TypeId::of::<zed_actions::feedback::FileBugReport>(),
+                TypeId::of::<zed_actions::feedback::RequestFeature>(),
+                TypeId::of::<zed_actions::feedback::EmailZed>(),
+                TypeId::of::<feedback::OpenZedRepo>(),
             ]);
         });
         zed::watch_user_agents_md(app_state.fs.clone(), cx);

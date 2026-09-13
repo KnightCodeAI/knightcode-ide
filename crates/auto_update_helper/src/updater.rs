@@ -164,7 +164,7 @@ impl Job {
 }
 
 #[cfg(not(test))]
-pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
+pub(crate) static JOBS: LazyLock<[Job; 24]> = LazyLock::new(|| {
     fn p(value: &str) -> &Path {
         Path::new(value)
     }
@@ -172,10 +172,16 @@ pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
         // Move old files
         // Not deleting because installing new files can fail
         Job::mkdir(p("old")),
-        Job::move_file(p("Zed.exe"), p("old\\Zed.exe")),
+        Job::move_file(p("KnightCode.exe"), p("old\\KnightCode.exe")),
         Job::mkdir(p("old\\bin")),
-        Job::move_file(p("bin\\Zed.exe"), p("old\\bin\\Zed.exe")),
-        Job::move_file(p("bin\\zed"), p("old\\bin\\zed")),
+        Job::move_file(
+            p("bin\\knightcode-ide.exe"),
+            p("old\\bin\\knightcode-ide.exe"),
+        ),
+        Job::move_file(p("bin\\knightcode-ide"), p("old\\bin\\knightcode-ide")),
+        // The engine moves as one directory, with the runtime assets it reads
+        // from beside itself. It exits when the IDE does, inside the retry window.
+        Job::move_file(p("engine"), p("old\\engine")),
         //
         // TODO: remove after a few weeks once everyone is on the new version and this file never exists
         Job::move_if_exists(p("OpenConsole.exe"), p("old\\OpenConsole.exe")),
@@ -189,9 +195,13 @@ pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
         //
         Job::move_file(p("conpty.dll"), p("old\\conpty.dll")),
         // Copy new files
-        Job::move_file(p("install\\Zed.exe"), p("Zed.exe")),
-        Job::move_file(p("install\\bin\\Zed.exe"), p("bin\\Zed.exe")),
-        Job::move_file(p("install\\bin\\zed"), p("bin\\zed")),
+        Job::move_file(p("install\\KnightCode.exe"), p("KnightCode.exe")),
+        Job::move_file(
+            p("install\\bin\\knightcode-ide.exe"),
+            p("bin\\knightcode-ide.exe"),
+        ),
+        Job::move_file(p("install\\bin\\knightcode-ide"), p("bin\\knightcode-ide")),
+        Job::move_file(p("install\\engine"), p("engine")),
         //
         Job::mkdir_if_exists(p("x64"), p("install\\x64")),
         Job::mkdir_if_exists(p("arm64"), p("install\\arm64")),
@@ -279,10 +289,11 @@ pub(crate) static JOBS: LazyLock<[Job; 9]> = LazyLock::new(|| {
 fn release_file_handles(app_dir: &Path) -> Result<()> {
     // Files that commonly get locked by Explorer or other processes
     let files_to_release = [
-        app_dir.join("Zed.exe"),
-        app_dir.join("bin\\Zed.exe"),
-        app_dir.join("bin\\zed"),
+        app_dir.join("KnightCode.exe"),
+        app_dir.join("bin\\knightcode-ide.exe"),
+        app_dir.join("bin\\knightcode-ide"),
         app_dir.join("conpty.dll"),
+        app_dir.join("engine\\knightcode-engine.exe"),
     ];
 
     log::info!("Attempting to release file handles using Restart Manager...");
@@ -365,7 +376,7 @@ fn release_file_handles(app_dir: &Path) -> Result<()> {
 
 #[allow(clippy::disallowed_methods, reason = "doesn't run in the main binary")]
 fn zed_launch_command(app_dir: &Path, launch_arguments: &[OsString]) -> std::process::Command {
-    let mut command = std::process::Command::new(app_dir.join("Zed.exe"));
+    let mut command = std::process::Command::new(app_dir.join("KnightCode.exe"));
     command.args(launch_arguments);
     command
 }
@@ -442,7 +453,7 @@ pub(crate) fn perform_update(
         #[allow(clippy::disallowed_methods, reason = "doesn't run in the main binary")]
         let _child = zed_launch_command(app_dir, launch_arguments)
             .spawn()
-            .context("Failed to launch Zed after update")?;
+            .context("Failed to launch KnightCode after update")?;
     }
     log::info!("Update completed successfully");
     Ok(())
@@ -460,11 +471,11 @@ mod test {
             OsString::from("--user-data-dir"),
             OsString::from(r"C:\Zed Data"),
         ];
-        let command = zed_launch_command(Path::new(r"C:\Program Files\Zed"), &arguments);
+        let command = zed_launch_command(Path::new(r"C:\Programs\KnightCode"), &arguments);
 
         assert_eq!(
             command.get_program(),
-            Path::new(r"C:\Program Files\Zed\Zed.exe").as_os_str()
+            Path::new(r"C:\Programs\KnightCode\KnightCode.exe").as_os_str()
         );
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),

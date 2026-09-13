@@ -80,7 +80,8 @@ pub fn engine_environment(
 }
 
 /// The setting, then the environment variable, then the binary beside the
-/// IDE executable. The error names the path that was tried.
+/// IDE executable, then the binary in `engine/` beside it. The error names the
+/// path that was tried.
 pub fn locate_binary(
     setting: Option<&Path>,
     env: Option<&Path>,
@@ -89,7 +90,15 @@ pub fn locate_binary(
     let candidate = setting
         .map(Path::to_path_buf)
         .or_else(|| env.map(Path::to_path_buf))
-        .or_else(|| exe_dir.map(|dir| dir.join(BINARY_NAME)));
+        .or_else(|| {
+            // A development build drops the bare binary beside the IDE. The
+            // installers put it, with the runtime assets it reads from beside
+            // itself, in its own directory.
+            exe_dir
+                .map(|dir| dir.join(BINARY_NAME))
+                .filter(|path| path.is_file())
+        })
+        .or_else(|| exe_dir.map(|dir| dir.join("engine").join(BINARY_NAME)));
     let Some(candidate) = candidate else {
         return Err(anyhow!(
             "knightcode-engine was not found: set knightcode.engine_path or {PATH_ENV}, or place {BINARY_NAME} next to the IDE executable"
@@ -169,6 +178,25 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains(PATH_ENV)
+        );
+    }
+
+    #[test]
+    fn the_binary_is_found_in_the_engine_directory_beside_the_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine_dir = dir.path().join("engine");
+        let installed = engine_dir.join(BINARY_NAME);
+
+        let error = locate_binary(None, None, Some(dir.path()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&installed.display().to_string()), "{error}");
+
+        std::fs::create_dir(&engine_dir).unwrap();
+        std::fs::write(&installed, b"").unwrap();
+        assert_eq!(
+            locate_binary(None, None, Some(dir.path())).unwrap(),
+            installed
         );
     }
 }

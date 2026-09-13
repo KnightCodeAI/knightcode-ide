@@ -9,15 +9,19 @@ open_result=false
 local_install=false
 can_code_sign=false
 
-# This must match the team in the provisioning profile.
-IDENTITY="Zed Industries, Inc."
-APPLE_NOTARIZATION_TEAM="MQ55VZLNZQ"
+# The Developer ID the bundle is signed with, used only when all five signing
+# variables below are set. KnightCodeAI has no Apple Developer account yet, so
+# there is no identity to name.
+IDENTITY=""
 
 # Function for displaying help info
 help_info() {
   echo "
 Usage: ${0##*/} [options] [architecture=host]
 Build the application bundle for macOS.
+
+KNIGHTCODE_ENGINE_DIR must name the directory 'bun run build:engine' writes
+for this target (packages/cli-darwin-<arch>/bin in the KnightCode repository).
 
 Options:
   -d    Compile in debug mode
@@ -46,6 +50,11 @@ do
 done
 
 shift $((OPTIND-1))
+
+if [[ -z "${KNIGHTCODE_ENGINE_DIR:-}" || ! -f "${KNIGHTCODE_ENGINE_DIR}/knightcode-engine" ]]; then
+    echo "KNIGHTCODE_ENGINE_DIR must name a directory containing knightcode-engine and its runtime assets (bun run scripts/build.ts --engine --target=darwin-<arch>)." >&2
+    exit 1
+fi
 
 
 # Get release channel
@@ -88,9 +97,9 @@ rustup target add $target_triple
 
 echo "Compiling zed binaries"
 cargo --config .cargo/bundle-config.toml build ${build_flag} --package zed --package cli --target $target_triple
-# Build remote_server in separate invocation to prevent feature unification from other crates
-# from influencing dynamic libraries required by it.
-cargo --config .cargo/bundle-config.toml build ${build_flag} --package remote_server --target $target_triple
+# Not built, on purpose: remote_server, a separate archive for SSH remoting
+# with no release feed to serve it from. No Sentry upload either: it targets
+# Zed's Sentry organisation.
 
 echo "Creating application bundle"
 pushd crates/zed
@@ -195,28 +204,25 @@ function sign_app_binaries() {
     echo "Downloading git binary"
     download_git "${target_triple}" "${app_path}/Contents/MacOS/git"
 
-    # Note: The app identifier for our development builds is the same as the app identifier for nightly.
-    cp crates/zed/contents/$channel/embedded.provisionprofile "${app_path}/Contents/"
+    # No provisioning profile is embedded: upstream's belongs to Zed's team, and
+    # one is only meaningful beside a Developer ID signature from the same team.
 
     if [[ $can_code_sign = true ]]; then
         echo "Code signing binaries"
         # sequence of codesign commands modeled after this example: https://developer.apple.com/forums/thread/701514
         /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$IDENTITY" "${app_path}/Contents/MacOS/cli" -v
         /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$IDENTITY" "${app_path}/Contents/MacOS/git" -v
+        /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${app_path}/Contents/MacOS/engine/knightcode-engine" -v
         /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${app_path}/Contents/MacOS/zed" -v
         /usr/bin/codesign --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${app_path}" -v
     else
         echo "One or more of the following variables are missing: MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, APPLE_NOTARIZATION_KEY, APPLE_NOTARIZATION_KEY_ID, APPLE_NOTARIZATION_ISSUER_ID"
 
         echo "====== WARNING ======"
-        echo "This bundle is being signed without all entitlements, some features (e.g. universal links) will not work"
+        echo "This bundle has no Developer ID signature and is not notarised: Gatekeeper refuses it on any Mac that did not build it."
+        echo "It is signed ad hoc without all entitlements, so some features (e.g. universal links) will not work"
         echo "====== WARNING ======"
 
-        # NOTE: if you need to test universal links you have a few paths forward:
-        # - create a PR and tag it with the `run-bundling` label, and download the .dmg file from there.
-        # - get a signing key for the MQ55VZLNZQ team from Nathan.
-        # - create your own signing key, and update references to MQ55VZLNZQ to your own team ID
-        # then comment out this line.
         cat crates/zed/resources/zed.entitlements | sed '/com.apple.developer.associated-domains/,+1d' > "${app_path}/Contents/Resources/zed.entitlements"
 
         codesign --force --deep --entitlements "${app_path}/Contents/Resources/zed.entitlements" --sign ${MACOS_SIGNING_KEY:- -} "${app_path}" -v
@@ -245,7 +251,7 @@ function sign_app_binaries() {
     else
         dmg_target_directory="target/${target_triple}/${target_dir}"
         dmg_source_directory="${dmg_target_directory}/dmg"
-        dmg_file_path="${dmg_target_directory}/Zed-${arch_suffix}.dmg"
+        dmg_file_path="${dmg_target_directory}/KnightCode-${arch_suffix}.dmg"
         xcode_bin_dir_path="$(xcode-select -p)/usr/bin"
 
         rm -rf ${dmg_source_directory}
@@ -257,16 +263,15 @@ function sign_app_binaries() {
         ln -s /Applications ${dmg_source_directory}
 
         echo "Creating final DMG at ${dmg_file_path} using ${dmg_source_directory}"
-        hdiutil create -volname Zed -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
+        hdiutil create -volname KnightCode -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
 
         # If someone runs this bundle script locally, a symlink will be placed in `dmg_source_directory`.
         # This symlink causes CPU issues with Zed if the Zed codebase is the project being worked on, so we simply remove it for now.
         echo "Removing symlink to /Applications from ${dmg_source_directory}"
         rm ${dmg_source_directory}/Applications
 
-        echo "Adding license agreement to DMG"
-        npm install --global dmg-license minimist
-        dmg-license script/terms/terms.json "${dmg_file_path}"
+        # No licence agreement is attached to the DMG: upstream attaches Zed's
+        # terms of service, and the IDE ships under the GPL, which needs none.
 
         if [[ $can_code_sign = true ]]; then
             echo "Notarizing DMG with Apple"
@@ -283,74 +288,30 @@ function sign_app_binaries() {
     fi
 }
 
-function sign_binary() {
-    local binary_path=$1
-
-    if [[ $can_code_sign = true ]]; then
-        echo "Code signing executable $binary_path"
-        /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${binary_path}" -v
-    fi
-}
-
-debug_symbols_extracted=false
 function extract_debug_symbols() {
-    if [ "$debug_symbols_extracted" = true ]; then
-        return
-    fi
-    debug_symbols_extracted=true
     if ! dsymutil --flat "target/${target_triple}/${target_dir}/zed" 2> target/dsymutil.log; then
         echo "dsymutil failed"
         cat target/dsymutil.log
         exit 1
     fi
-    if ! dsymutil --flat "target/${target_triple}/${target_dir}/remote_server" 2> target/dsymutil.log; then
-        echo "dsymutil failed"
-        cat target/dsymutil.log
-        exit 1
-    fi
 }
 
-function upload_debug_symbols() {
-    if [ "$local_install" = true ]; then
-        echo "local install; skipping sentry upload."
-    elif [[ -n "${SENTRY_AUTH_TOKEN:-}" ]]; then
-        echo "Uploading zed debug symbols to sentry..."
-        extract_debug_symbols
-        # Try uploading up to 3 times
-        for attempt in 1 2 3; do
-            echo "Sentry upload attempt $attempt..."
-            if sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev \
-                "target/${target_triple}/${target_dir}/zed.dwarf" \
-                "target/${target_triple}/${target_dir}/remote_server.dwarf"; then
-                break
-            else
-                echo "Sentry upload failed on attempt $attempt"
-                if [ $attempt -eq 3 ]; then
-                    echo "All sentry upload attempts failed"
-                    exit 1
-                fi
-            fi
-        done
-    else
-        echo "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
-    fi
-}
-
-upload_debug_symbols
-
-# Sentry receives the extracted zed.dwarf, not the binary, so debug symbols
-# must be extracted before the binaries are stripped below. The .dwarf files
-# also keep symbols recoverable when the sentry upload is skipped.
+# The extracted zed.dwarf keeps symbols recoverable, so debug symbols must be
+# extracted before the binaries are stripped below.
 if [[ "$target_dir" == "release" && "$local_install" != true ]]; then
     extract_debug_symbols
     strip -x "target/${target_triple}/${target_dir}/zed"
     strip -x "target/${target_triple}/${target_dir}/cli"
-    strip -x "target/${target_triple}/${target_dir}/remote_server"
 fi
 
 cp target/${target_triple}/${target_dir}/zed "${app_path}/Contents/MacOS/zed"
 cp target/${target_triple}/${target_dir}/cli "${app_path}/Contents/MacOS/cli"
-sign_app_binaries
 
-sign_binary "target/$target_triple/release/remote_server"
-gzip -f --stdout --best target/$target_triple/release/remote_server > target/zed-remote-server-macos-$arch_suffix.gz
+# The engine and the runtime assets it reads from beside itself. The IDE finds
+# it in engine/ next to its own executable; the CLI binary is not shipped. It is
+# staged before signing so the signature covers it.
+mkdir -p "${app_path}/Contents/MacOS/engine"
+cp -R "${KNIGHTCODE_ENGINE_DIR}/." "${app_path}/Contents/MacOS/engine/"
+rm -f "${app_path}/Contents/MacOS/engine/knightcode"
+
+sign_app_binaries
