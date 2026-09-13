@@ -24,17 +24,35 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
-  windows:
-    # windows-2022, not windows-latest: its image lists the Spectre-mitigated
-    # CRT, the 26100 SDK and CMake that a Windows build needs; windows-latest
-    # now points at a Visual Studio 2026 image.
-    runs-on: windows-2022
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-2022, not windows-latest: its image lists the
+          # Spectre-mitigated CRT, the 26100 SDK and CMake that a Windows build
+          # needs; windows-latest now points at a Visual Studio 2026 image.
+          - os: windows
+            runner: windows-2022
+          - os: macos
+            runner: macos-15
+          - os: linux
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install the pinned toolchain
         run: rustup show
+
+      - name: Install the Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          ./script/linux
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       # Only main saves the cache: a cache saved from a pull request is visible to
       # that pull request alone, and the repository's cache quota is shared.
@@ -43,10 +61,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
+        if: matrix.os == 'linux'
         run: cargo fmt --all -- --check
 
       - name: Test the KnightCode crates and the upstream crates they change
-        run: cargo test -p knightcode_engine -p knightcode_agent -p knightcode_models -p settings -p release_channel
+        run: cargo test -p knightcode_engine -p knightcode_agent -p knightcode_models -p auto_update -p auto_update_helper -p settings -p release_channel
 
       - name: Build the IDE
         run: cargo build -p zed
