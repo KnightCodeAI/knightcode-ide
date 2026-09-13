@@ -421,7 +421,8 @@ mod tests {
         );
         assert_eq!(
             cx.read(edit_prediction_model_name).as_deref(),
-            Some("Claude Opus 5")
+            Some("Claude Opus 5 (Anthropic)"),
+            "the name the model picker shows, provider included"
         );
         assert!(
             !cx.read(edit_prediction_model_is_chosen),
