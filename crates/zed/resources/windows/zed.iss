@@ -68,6 +68,7 @@ Name: "{app}"; AfterInstall: DisableAppDirInheritance
 [Files]
 Source: "{#ResourcesDir}\{#AppExeName}.exe"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
 Source: "{#ResourcesDir}\bin\*"; DestDir: "{code:GetInstallDir}\bin"; Flags: ignoreversion
+Source: "{#ResourcesDir}\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion
 ; The engine and the runtime assets it reads from beside itself. The IDE finds
 ; it in engine\ next to its own executable.
 Source: "{#ResourcesDir}\engine\*"; DestDir: "{code:GetInstallDir}\engine"; Flags: ignoreversion recursesubdirs createallsubdirs

@@ -117,10 +117,11 @@ function GenerateLicenses {
 
 function BuildZedAndItsFriends {
     Write-Output "Building KnightCode and its friends, for channel: $channel"
-    # Build zed.exe and cli.exe
-    cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target $target
+    # Build zed.exe, cli.exe and auto_update_helper.exe
+    cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --package auto_update_helper --target $target
     Copy-Item -Path ".\$CargoOutDir\zed.exe" -Destination "$innoDir\KnightCode.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\cli.exe" -Destination "$innoDir\cli.exe" -Force
+    Copy-Item -Path ".\$CargoOutDir\auto_update_helper.exe" -Destination "$innoDir\auto_update_helper.exe" -Force
 }
 
 function ZipZedAndItsFriendsDebug {
@@ -154,6 +155,8 @@ function CollectFiles {
     # knightcode on PATH.
     Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\knightcode-ide.exe" -Force
     Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\knightcode-ide" -Force
+    New-Item -Type Directory -Path "$innoDir\tools" -Force
+    Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
     if($Architecture -eq "aarch64") {
         New-Item -Type Directory -Path "$innoDir\arm64" -Force
         Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
@@ -291,8 +294,6 @@ $debugStoreKey = "$env:ZED_RELEASE_CHANNEL/zed-$env:RELEASE_VERSION-$env:ZED_REL
 # Not built, on purpose:
 # - remote_server: a separate archive for SSH remoting, with no release feed
 #   to serve it from.
-# - auto_update_helper: updates are off (release_channel::poll_for_updates),
-#   and it renames files it finds by the name Zed.exe.
 # - explorer_command_injector and its appx: the package claims Zed Industries'
 #   identity, and installing it needs a trusted signature. The classic
 #   context-menu entries in zed.iss cover Windows 11 under "Show more options".
