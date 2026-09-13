@@ -273,15 +273,37 @@ impl Render for EditPredictionButton {
                     "Sign in to KnightCode to enable edit predictions"
                 };
 
-                // The language toggles only: no provider switching and no
-                // "configure providers" item, so no other provider is
-                // reachable from here.
+                // The language toggles and Tab's model only: no provider
+                // switching and no "configure providers" item, so no other
+                // provider is reachable from here.
                 div().child(
                     PopoverMenu::new("knightcode")
                         .menu(move |window, cx| {
                             this.update(cx, |this, cx| {
                                 ContextMenu::build(window, cx, |menu, window, cx| {
-                                    this.build_language_settings_menu(menu, window, cx)
+                                    use knightcode_models::edit_prediction as tab;
+                                    let menu = this.build_language_settings_menu(menu, window, cx);
+                                    let chosen = tab::edit_prediction_model_is_chosen(cx);
+                                    let label = match tab::edit_prediction_model_name(cx) {
+                                        Some(name) if chosen => name,
+                                        Some(name) => format!("{name} (chat model)"),
+                                        None => "Choose a Model".to_string(),
+                                    };
+                                    let menu = menu
+                                        .separator()
+                                        .header("Model")
+                                        .action(label, Box::new(tab::SelectEditPredictionModel));
+                                    if !chosen {
+                                        return menu;
+                                    }
+                                    let fs = this.fs.clone();
+                                    menu.entry("Use Chat Model", None, move |_, cx| {
+                                        update_settings_file(fs.clone(), cx, |settings, _| {
+                                            if let Some(knightcode) = settings.knightcode.as_mut() {
+                                                knightcode.edit_prediction_model = None;
+                                            }
+                                        });
+                                    })
                                 })
                             })
                             .ok()
