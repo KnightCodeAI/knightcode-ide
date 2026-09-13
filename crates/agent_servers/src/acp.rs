@@ -1761,6 +1761,39 @@ impl AgentConnection for AcpConnection {
             .is_some()
     }
 
+    fn supports_fork_session(&self) -> bool {
+        self.agent_capabilities.session_capabilities.fork.is_some()
+    }
+
+    fn fork_session(
+        self: Rc<Self>,
+        session_id: acp::SessionId,
+        work_dirs: PathList,
+        cx: &mut App,
+    ) -> Task<Result<acp::SessionId>> {
+        if !self.supports_fork_session() {
+            return Task::ready(Err(anyhow!(
+                "Forking sessions is not supported by this agent."
+            )));
+        }
+        let directories = match self.session_directories_from_work_dirs(&work_dirs) {
+            Ok(directories) => directories,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        let connection = self.connection.clone();
+        cx.foreground_executor().spawn(async move {
+            let response = connection
+                .send_request(
+                    acp::ForkSessionRequest::new(session_id, directories.cwd)
+                        .additional_directories(directories.additional_directories),
+                )
+                .block_task()
+                .await
+                .map_err(map_acp_error)?;
+            Ok(response.session_id)
+        })
+    }
+
     fn load_session(
         self: Rc<Self>,
         session_id: acp::SessionId,
@@ -2391,10 +2424,20 @@ pub mod test_support {
                                 .load_session(true)
                                 .session_capabilities(
                                     acp::SessionCapabilities::default()
-                                        .close(acp::SessionCloseCapabilities::new()),
+                                        .close(acp::SessionCloseCapabilities::new())
+                                        .fork(acp::SessionForkCapabilities::new()),
                                 ),
                         ),
                     )
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |req: acp::ForkSessionRequest, responder, _cx| {
+                    responder.respond(acp::ForkSessionResponse::new(acp::SessionId::new(format!(
+                        "{}-fork",
+                        req.session_id.0
+                    ))))
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -3692,6 +3735,33 @@ mod tests {
                 .expect("deleted sessions lock should not be poisoned"),
             vec![session_id]
         );
+    }
+
+    #[gpui::test]
+    async fn fork_session_asks_the_agent_and_returns_the_new_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let store = settings::SettingsStore::test(cx);
+            cx.set_global(store);
+        });
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/", serde_json::json!({ "a": {} })).await;
+        let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
+        let harness = test_support::connect_fake_acp_connection(project, cx).await;
+
+        assert!(harness.connection.supports_fork_session());
+        let forked = cx
+            .update(|cx| {
+                harness.connection.clone().fork_session(
+                    acp::SessionId::new("original"),
+                    PathList::new(&[std::path::Path::new("/a")]),
+                    cx,
+                )
+            })
+            .await
+            .expect("fork_session failed");
+        assert_eq!(forked, acp::SessionId::new("original-fork"));
     }
 
     #[gpui::test]

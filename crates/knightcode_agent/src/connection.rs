@@ -140,6 +140,19 @@ impl AgentConnection for KnightCodeConnection {
             .resume_session(session_id, project, work_dirs, title, cx)
     }
 
+    fn supports_fork_session(&self) -> bool {
+        self.inner.supports_fork_session()
+    }
+
+    fn fork_session(
+        self: Rc<Self>,
+        session_id: acp::SessionId,
+        work_dirs: PathList,
+        cx: &mut App,
+    ) -> Task<Result<acp::SessionId>> {
+        self.inner.clone().fork_session(session_id, work_dirs, cx)
+    }
+
     fn supports_session_history(&self) -> bool {
         self.inner.supports_session_history()
     }

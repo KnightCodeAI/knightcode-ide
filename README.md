@@ -46,7 +46,9 @@ fork surface.
 | `crates/knightcode_models/` | new crate, completions and edit prediction |
 | `crates/knightcode_engine/` | new crate, process lifecycle and HTTP client |
 | `crates/agent_ui/src/agent_ui.rs` | one match arm; command-palette filter |
-| `crates/agent_ui/src/agent_panel.rs` | one string, the new-thread menu entry |
+| `crates/agent_ui/src/agent_panel.rs` | one string, the new-thread menu entry; the Fork Thread menu entry and `fork_thread` |
+| `crates/acp_thread/src/connection.rs` | `supports_fork_session` and `fork_session`, defaulting to unsupported |
+| `crates/agent_servers/src/acp.rs` | the fork session capability and request; the fake server advertises and answers it |
 | `crates/agent_ui/src/conversation_view.rs` | one string, the composer placeholder |
 | `crates/agent_ui/src/mention_set.rs` | unspent |
 | `crates/agent_ui/Cargo.toml` | one dependency |

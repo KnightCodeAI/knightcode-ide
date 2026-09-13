@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-use acp_thread::{AcpThread, AcpThreadEvent, MentionUri, ThreadStatus, line_range_suffix};
+use acp_thread::{
+    AcpThread, AcpThreadEvent, AgentConnection, MentionUri, ThreadStatus, line_range_suffix,
+};
 use agent::{ContextServerRegistry, SharedThread, ThreadStore};
 use agent_client_protocol::schema::v1 as acp;
 use agent_servers::AgentServer;
@@ -5577,6 +5579,44 @@ impl AgentPanel {
         });
     }
 
+    /// Asks the agent to copy the thread's session into a new one, then opens that
+    /// session as its own thread, which loads the copied history.
+    fn fork_thread(
+        panel: WeakEntity<Self>,
+        agent: Agent,
+        connection: Rc<dyn AgentConnection>,
+        session_id: acp::SessionId,
+        work_dirs: Option<PathList>,
+        title: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(fork_work_dirs) = work_dirs.clone() else {
+            log::error!("cannot fork a thread without working directories");
+            return;
+        };
+        let fork = connection.fork_session(session_id, fork_work_dirs, cx);
+        window
+            .spawn(cx, async move |cx| {
+                let session_id = fork.await?;
+                panel.update_in(cx, |panel, window, cx| {
+                    let title = title.map(|title| SharedString::from(format!("{title} (fork)")));
+                    panel.external_thread_by_session(
+                        agent,
+                        session_id,
+                        work_dirs,
+                        title,
+                        true,
+                        AgentThreadSource::AgentPanel,
+                        window,
+                        cx,
+                    );
+                })?;
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+    }
+
     fn handle_regenerate_thread_title(
         conversation_view: Entity<ConversationView>,
         workspace: WeakEntity<Workspace>,
@@ -5647,6 +5687,7 @@ impl AgentPanel {
             .is_some();
 
         let workspace = self.workspace.clone();
+        let panel = cx.entity().downgrade();
 
         PopoverMenu::new("agent-options-menu")
             .trigger_with_tooltip(
@@ -5702,6 +5743,39 @@ impl AgentPanel {
                                                 });
                                             }
                                         }
+                                    });
+                                }
+
+                                let fork_source = conversation_view
+                                    .read(cx)
+                                    .root_thread(cx)
+                                    .and_then(|thread| {
+                                        let thread = thread.read(cx);
+                                        thread.connection().supports_fork_session().then(|| {
+                                            (
+                                                thread.connection().clone(),
+                                                thread.session_id().clone(),
+                                                thread.work_dirs().cloned(),
+                                                thread.title(),
+                                            )
+                                        })
+                                    });
+                                if let Some((connection, session_id, work_dirs, title)) =
+                                    fork_source
+                                {
+                                    let agent = conversation_view.read(cx).agent_key().clone();
+                                    let panel = panel.clone();
+                                    menu = menu.entry("Fork Thread", None, move |window, cx| {
+                                        Self::fork_thread(
+                                            panel.clone(),
+                                            agent.clone(),
+                                            connection.clone(),
+                                            session_id.clone(),
+                                            work_dirs.clone(),
+                                            title.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     });
                                 }
 
